@@ -1,9 +1,8 @@
 # Protocol de promoció de canvis
 
-> **Promoció pendent:** el nucli incremental, els modes de desplegament i les
-> guies canòniques del 05/08/2026 encara no s’han sincronitzat amb aquesta
-> còpia. Fins que el protocol es completi, l’arrel del repositori és l’única
-> font funcional vigent.
+> **Promoció completada:** el 09/08/2026 s’han sincronitzat l’aplicació
+> multipàgina, el nucli incremental i els modes de desplegament amb aquesta
+> còpia de demostració.
 
 ## Carpetes
 
@@ -28,14 +27,8 @@ Un canvi només passa al projecte de proves quan:
 | Projecte de treball | Projecte de proves |
 |---|---|
 | `streamlit_app.py` | `streamlit_app.py`, conservant la base temporal de sessió |
-| `planificador_cp_sat/ui/planificacio.py` | `ui_planificacio_cp_sat.py` |
-| `planificador_cp_sat/ui/descansos.py` | `ui_descansos.py` |
-| `planificador_cp_sat/ui/incidencies.py` | `ui_incidencies.py` |
-| `planificador_cp_sat/ui/components.py` | `ui_components.py` |
-| `planificador_cp_sat/services/planificacio.py` | `servei_planificacio_cp_sat.py` |
-| `planificador_cp_sat/services/replanificacio.py` | `servei_replanificacio_cp_sat.py` |
-| `planificador_cp_sat/services/incidencies.py` | `servei_incidencies.py` |
-| `planificador_cp_sat/services/descansos.py` | `servei_descansos.py` |
+| `app_pages/` | mateixa ruta |
+| `planificador_cp_sat/` | mateixa ruta |
 | `cp_sat_pilot/src/cp_sat_pilot/` | mateixa ruta |
 
 `streamlit_app.py` conserva una adaptació pròpia: utilitza una còpia temporal

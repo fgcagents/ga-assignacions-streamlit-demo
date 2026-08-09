@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import quote
 
 
-PILOT_SRC = Path(__file__).resolve().parent / "cp_sat_pilot" / "src"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PILOT_SRC = PROJECT_ROOT / "cp_sat_pilot" / "src"
 if str(PILOT_SRC) not in sys.path:
     sys.path.insert(0, str(PILOT_SRC))
 
@@ -285,7 +286,7 @@ def _create_sqlite_backup(
     directory = (
         Path(backup_directory).resolve()
         if backup_directory is not None
-        else database.parent / "backups" / "cp_sat"
+        else PROJECT_ROOT / "backups" / "cp_sat"
     )
     directory.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -317,6 +318,239 @@ def limits_cobertura(database_path: str | Path) -> tuple[date, date]:
     return date.fromisoformat(row["inici"]), date.fromisoformat(row["fi"])
 
 
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    return connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        """,
+        (table_name,),
+    ).fetchone() is not None
+
+
+def current_plan_summary(database_path: str | Path) -> dict[str, Any]:
+    """Resumeix el pla operatiu actiu, separat de les propostes desades."""
+    initialize_cp_sat_drafts(database_path)
+    with closing(_readonly_connection(database_path)) as connection:
+        active = connection.execute(
+            """
+            SELECT MIN(data) AS data_inici, MAX(data) AS data_fi,
+                   COUNT(*) AS assignacions_actives,
+                   SUM(CASE WHEN estat_planificacio = 'bloquejada'
+                            THEN 1 ELSE 0 END) AS assignacions_bloquejades,
+                   MAX(created_at) AS ultima_actualitzacio
+            FROM assig_grup_T
+            WHERE estat_planificacio IN ('publicada', 'bloquejada')
+            """
+        ).fetchone()
+        publications = connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM publicacions_inicials_cp_sat
+            WHERE estat = 'publicada'
+            """
+        ).fetchone()
+        latest_publication = connection.execute(
+            """
+            SELECT proposta_id, created_at
+            FROM publicacions_inicials_cp_sat
+            WHERE estat = 'publicada'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        repairs_applied = 0
+        latest_repair = None
+        if (
+            active["data_inici"]
+            and active["data_fi"]
+            and _table_exists(connection, "propostes_replanificacio")
+        ):
+            repair_row = connection.execute(
+                """
+                SELECT COUNT(*) AS total, MAX(aprovada_at) AS ultima
+                FROM propostes_replanificacio
+                WHERE estat = 'aprovada'
+                  AND data_inici <= ? AND data_fi >= ?
+                """,
+                (active["data_fi"], active["data_inici"]),
+            ).fetchone()
+            repairs_applied = int(repair_row["total"] or 0)
+            latest_repair = repair_row["ultima"]
+
+    timestamps = [
+        value
+        for value in (
+            active["ultima_actualitzacio"],
+            latest_publication["created_at"] if latest_publication else None,
+            latest_repair,
+        )
+        if value
+    ]
+    return {
+        "data_inici": active["data_inici"],
+        "data_fi": active["data_fi"],
+        "assignacions_actives": int(active["assignacions_actives"] or 0),
+        "assignacions_bloquejades": int(
+            active["assignacions_bloquejades"] or 0
+        ),
+        "publicacions_inicials_actives": int(publications["total"] or 0),
+        "darrera_proposta_inicial_id": (
+            int(latest_publication["proposta_id"])
+            if latest_publication
+            else None
+        ),
+        "reparacions_aplicades": repairs_applied,
+        "ultima_actualitzacio": max(timestamps) if timestamps else None,
+    }
+
+
+def compare_initial_draft_with_current_plan(
+    database_path: str | Path,
+    draft_id: int,
+) -> dict[str, Any]:
+    """Compara la fotografia inicial amb el pla actiu del mateix període."""
+    initialize_cp_sat_drafts(database_path)
+    with closing(_readonly_connection(database_path)) as connection:
+        header = connection.execute(
+            """
+            SELECT id, estat, data_inici, data_fi
+            FROM propostes_inicials_cp_sat
+            WHERE id = ?
+            """,
+            (draft_id,),
+        ).fetchone()
+        if header is None:
+            raise ValueError("No s'ha trobat la proposta inicial CP-SAT")
+
+        original_rows = connection.execute(
+            """
+            SELECT tipus, necessitat_id, data, servei, treballador_id,
+                   treballador, hora_inici, hora_fi, durada_hores, zona,
+                   habilitacions
+            FROM proposta_inicial_cp_sat_elements
+            WHERE proposta_id = ?
+            ORDER BY data, servei, id
+            """,
+            (draft_id,),
+        ).fetchall()
+        current_rows = connection.execute(
+            """
+            SELECT id AS assignacio_id,
+                   data || '::' || torn AS necessitat_id,
+                   data, torn AS servei, treballador_id, treballador_nom,
+                   hora_inici, hora_fi, durada_hores, zona, formacio,
+                   estat_planificacio, created_at
+            FROM assig_grup_T
+            WHERE data BETWEEN ? AND ?
+              AND estat_planificacio IN ('publicada', 'bloquejada')
+            ORDER BY data, torn, id
+            """,
+            (header["data_inici"], header["data_fi"]),
+        ).fetchall()
+
+        repair_ids: list[int] = []
+        if _table_exists(connection, "propostes_replanificacio"):
+            repair_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    """
+                    SELECT id
+                    FROM propostes_replanificacio
+                    WHERE estat = 'aprovada'
+                      AND data_inici <= ? AND data_fi >= ?
+                    ORDER BY aprovada_at, id
+                    """,
+                    (header["data_fi"], header["data_inici"]),
+                )
+            ]
+
+    original_by_need = {
+        row["necessitat_id"]: row for row in original_rows
+    }
+    current_by_need = {
+        row["necessitat_id"]: row for row in current_rows
+    }
+    current_assignments = [
+        {
+            "assignacio_id": int(row["assignacio_id"]),
+            "necessitat_id": row["necessitat_id"],
+            "data": row["data"],
+            "servei": row["servei"],
+            "treballador_id": row["treballador_id"],
+            "treballador": row["treballador_nom"],
+            "hora_inici": row["hora_inici"],
+            "hora_fi": row["hora_fi"],
+            "durada_hores": row["durada_hores"],
+            "zona": row["zona"] or "",
+            "habilitacions": row["formacio"] or "",
+            "estat": row["estat_planificacio"],
+            "created_at": row["created_at"],
+        }
+        for row in current_rows
+    ]
+
+    differences: list[dict[str, Any]] = []
+    all_need_ids = sorted(
+        set(original_by_need) | set(current_by_need),
+        key=lambda need_id: (
+            (original_by_need.get(need_id) or current_by_need[need_id])["data"],
+            (original_by_need.get(need_id) or current_by_need[need_id])["servei"],
+        ),
+    )
+    for need_id in all_need_ids:
+        original = original_by_need.get(need_id)
+        current = current_by_need.get(need_id)
+        original_worker_id = (
+            str(original["treballador_id"])
+            if original and original["tipus"] == "assignacio"
+            else None
+        )
+        current_worker_id = (
+            str(current["treballador_id"]) if current else None
+        )
+        if original_worker_id == current_worker_id:
+            continue
+        if original_worker_id is None and current_worker_id is not None:
+            status = "Cobertura afegida"
+        elif original_worker_id is not None and current_worker_id is None:
+            status = "Ara descoberta"
+        else:
+            status = "Reassignada"
+        reference = original or current
+        differences.append(
+            {
+                "necessitat_id": need_id,
+                "data": reference["data"],
+                "servei": reference["servei"],
+                "proposta_inicial": (
+                    original["treballador"]
+                    if original_worker_id is not None
+                    else "Descobert"
+                ),
+                "pla_vigent": (
+                    current["treballador_nom"] if current else "Descobert"
+                ),
+                "estat": status,
+            }
+        )
+
+    return {
+        "proposta_inicial_id": int(header["id"]),
+        "proposta_estat": header["estat"],
+        "data_inici": header["data_inici"],
+        "data_fi": header["data_fi"],
+        "assignacions_originals": sum(
+            row["tipus"] == "assignacio" for row in original_rows
+        ),
+        "assignacions_actives": len(current_assignments),
+        "reparacions_aplicades": repair_ids,
+        "assignacions": current_assignments,
+        "diferencies": differences,
+    }
+
+
 def _worker_names(database_path: str | Path) -> dict[str, str]:
     with closing(_readonly_connection(database_path)) as connection:
         return {
@@ -336,27 +570,22 @@ def generate_initial_coverage(
     seeds: Iterable[int] = (0, 1, 2),
     force_all_seeds: bool = False,
 ) -> dict[str, Any]:
-    """Genera una cobertura completa en memòria i no publica cap resultat."""
-    from cp_sat_pilot import CpSatPlanner, SolverConfig
-    from cp_sat_pilot.sqlite_adapter import (
-        SqliteInputError,
-        load_problem_from_sqlite,
+    """Adapta la proposta diferencial al format de cobertura inicial."""
+    from cp_sat_pilot import SolverConfig
+
+    from planificador_cp_sat.domain import (
+        PlanningExecutionRequest,
+        PlanningScope,
     )
-    from cp_sat_pilot.multistart import solve_adaptive_multi_start
+    from planificador_cp_sat.services.preparacio_planificacio import (
+        prepare_planning_problem,
+    )
+    from planificador_cp_sat.services.proposta_planificacio import (
+        generate_planning_proposal,
+    )
 
     if start_date > end_date:
         start_date, end_date = end_date, start_date
-    try:
-        with redirect_stdout(StringIO()):
-            problem = load_problem_from_sqlite(
-                database_path,
-                start_date=start_date,
-                end_date=end_date,
-                duplicate_policy="replace_all",
-            )
-    except SqliteInputError as exc:
-        raise ValueError(str(exc)) from exc
-
     solver_config = config or SolverConfig(
         max_time_seconds=60,
         equity_time_seconds=15,
@@ -364,17 +593,21 @@ def generate_initial_coverage(
         random_seed=0,
     )
     requested_seeds = tuple(dict.fromkeys(int(seed) for seed in seeds))
-    selection = solve_adaptive_multi_start(
-        CpSatPlanner(problem),
-        solver_config,
-        requested_seeds,
+    prepared = prepare_planning_problem(
+        database_path,
+        PlanningExecutionRequest(
+            scope=PlanningScope(start_date, end_date),
+        ),
+    )
+    proposal = generate_planning_proposal(
+        prepared,
+        config=solver_config,
+        seeds=requested_seeds,
         force_all_seeds=force_all_seeds,
     )
+    problem = prepared.problem
+    selection = proposal.selection
     result = selection.selected_result
-    if not result.feasible:
-        raise ValueError(
-            "CP-SAT no ha produït cap cobertura factible i validada"
-        )
 
     names = _worker_names(database_path)
     from cp_sat_pilot.functional_validation import analyze_functional_result

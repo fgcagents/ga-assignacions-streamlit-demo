@@ -4,30 +4,40 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 
-import streamlit as st
-
-from ui_descansos import (
-    reinicia_formularis_descansos,
-    render_pestanya_descansos,
-)
-from ui_incidencies import render_pestanya_incidencies
-from ui_planificacio_cp_sat import render_pestanya_planificacio_cp_sat
-
 
 BASE_DIR = Path(__file__).resolve().parent
-DEMO_DATABASE_PATH = BASE_DIR / "data" / "treballadors_demo.db"
+CP_SAT_SOURCE_DIR = BASE_DIR / "cp_sat_pilot" / "src"
+if CP_SAT_SOURCE_DIR.is_dir():
+    source_path = str(CP_SAT_SOURCE_DIR)
+    if source_path not in sys.path:
+        sys.path.insert(0, source_path)
+    loaded_cp_sat = sys.modules.get("cp_sat_pilot")
+    if (
+        loaded_cp_sat is not None
+        and getattr(loaded_cp_sat, "__file__", None) is None
+    ):
+        del sys.modules["cp_sat_pilot"]
 
-st.set_page_config(
-    page_title="Planificador de cobertures",
-    page_icon=":material/calendar_month:",
-    layout="wide",
+import streamlit as st
+
+from planificador_cp_sat.ui.descansos import (
+    reinicia_formularis_descansos,
 )
+from planificador_cp_sat.services.esquema_planificacio import (
+    PlanningSchemaMigrationError,
+    migrate_planning_schema,
+)
+
+DEMO_DATABASE_PATH = BASE_DIR / "data" / "treballadors_demo.db"
 
 
 def _session_database_path() -> Path:
+    """Aïlla els canvis de cada sessió sobre una còpia de la base demo."""
     configured_path = os.environ.get("PLANIFICADOR_DATABASE_PATH")
     if configured_path:
         return Path(configured_path)
@@ -47,11 +57,18 @@ def _session_database_path() -> Path:
 
 DATABASE_PATH = _session_database_path()
 
-st.title("Planificador de cobertures")
-st.caption(
-    "Crea el pla, consulta la disponibilitat i resol incidències des d'un "
-    "únic lloc."
+st.set_page_config(
+    page_title="Planificador de cobertures",
+    page_icon=":material/calendar_month:",
+    layout="wide",
 )
+
+
+@st.cache_resource
+def _prepare_schema(database_path: str) -> None:
+    """Prepara una vegada les taules compartides per totes les pàgines."""
+    migrate_planning_schema(database_path)
+
 
 with st.sidebar:
     st.subheader("Dades de treball")
@@ -66,7 +83,7 @@ with st.sidebar:
             st.caption("Còpia temporal independent per a aquesta sessió.")
     else:
         st.error(
-            "Falta `data/treballadors_demo.db`.",
+            f"No s'ha trobat {DATABASE_PATH}",
             icon=":material/error:",
         )
     if st.button(
@@ -82,23 +99,58 @@ with st.sidebar:
         "Generar o validar una proposta no modifica el pla publicat."
     )
 
-if DATABASE_PATH.exists():
-    planning_tab, query_tab, incidents_tab = st.tabs(
-        [
-            "Planificació",
-            "Consulta",
-            "Incidències",
-        ]
-    )
-    with planning_tab:
-        render_pestanya_planificacio_cp_sat(DATABASE_PATH)
-    with query_tab:
-        render_pestanya_descansos(DATABASE_PATH)
-    with incidents_tab:
-        render_pestanya_incidencies(DATABASE_PATH)
-else:
+if not DATABASE_PATH.exists():
     st.error(
-        "Afegeix una base pseudonimitzada a `data/treballadors_demo.db` abans "
-        "de publicar l'aplicació.",
+        "No es pot iniciar el planificador sense la base de dades.",
         icon=":material/database_off:",
     )
+    st.stop()
+
+try:
+    _prepare_schema(str(DATABASE_PATH))
+except (
+    OSError,
+    sqlite3.Error,
+    ValueError,
+    PlanningSchemaMigrationError,
+) as error:
+    st.error(
+        f"No s'ha pogut preparar la base de dades: {error}",
+        icon=":material/database_off:",
+    )
+    st.stop()
+
+st.session_state["database_path"] = str(DATABASE_PATH)
+
+page = st.navigation(
+    [
+        st.Page(
+            "app_pages/resum.py",
+            title="Resum",
+            icon=":material/dashboard:",
+            default=True,
+        ),
+        st.Page(
+            "app_pages/planificacio.py",
+            title="Planificació",
+            icon=":material/calendar_month:",
+        ),
+        st.Page(
+            "app_pages/pla_publicat.py",
+            title="Pla publicat",
+            icon=":material/fact_check:",
+        ),
+        st.Page(
+            "app_pages/personal.py",
+            title="Personal",
+            icon=":material/groups:",
+        ),
+        st.Page(
+            "app_pages/incidencies.py",
+            title="Incidències",
+            icon=":material/report:",
+        ),
+    ],
+    position="top",
+)
+page.run()

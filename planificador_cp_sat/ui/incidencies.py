@@ -7,12 +7,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from servei_descansos import llista_treballadors
-from servei_incidencies import (
-    TIPUS_INCIDENCIA, aprovar_proposta, generar_proposta, inicialitza_planificacio,
-    llista_incidencies, llista_propostes, obtenir_proposta, registrar_incidencia,
+from planificador_cp_sat.services.descansos import llista_treballadors
+from planificador_cp_sat.services.desplegament_planificacio import (
+    load_planning_rollout_config,
 )
-from ui_components import claus_selector_treballador, selector_treballador
+from planificador_cp_sat.services.incidencies import (
+    TIPUS_INCIDENCIA, aprovar_proposta, diagnosticar_abast_incidencia,
+    generar_proposta, inicialitza_planificacio, llista_incidencies,
+    llista_propostes, obtenir_proposta, registrar_incidencia,
+)
+from planificador_cp_sat.ui.components import (
+    claus_selector_treballador,
+    selector_treballador,
+)
 
 
 def _etiqueta(t: dict) -> str:
@@ -66,6 +73,53 @@ def _resum_operatiu(detall: dict) -> dict[str, int | float | None]:
             canvi["tipus"] == "servei_sense_cobertura" for canvi in canvis
         ),
     }
+
+
+def _data_llegible(valor: str | None) -> str | None:
+    if not valor:
+        return None
+    return date.fromisoformat(valor).strftime("%d/%m/%Y")
+
+
+def _missatge_sense_pla(abast: dict) -> str:
+    inici = _data_llegible(abast.get("data_inici"))
+    fi = _data_llegible(abast.get("data_fi"))
+    missatge = (
+        f"No es pot reparar la incidència del {inici} al {fi}: no hi ha "
+        "cap assignació publicada o bloquejada dins d'aquest període."
+    )
+    pla_inici = _data_llegible(abast.get("pla_data_inici"))
+    pla_fi = _data_llegible(abast.get("pla_data_fi"))
+    if pla_inici and pla_fi:
+        missatge += f" El pla actiu disponible va del {pla_inici} al {pla_fi}."
+    else:
+        missatge += " Encara no hi ha cap pla actiu publicat."
+    return missatge
+
+
+def _estat_proposta(detall: dict) -> tuple[str, str]:
+    resum = _resum_operatiu(detall)
+    errors = int(detall.get("errors_validacio") or 0)
+    abast = detall.get("diagnostic_abast") or {}
+    if errors:
+        return (
+            "error",
+            f"La proposta conté {errors} error(s) de validació i no es pot aprovar.",
+        )
+    if abast and int(abast.get("assignacions_pla_periode") or 0) == 0:
+        return "warning", _missatge_sense_pla(abast)
+    if resum["descobertes"]:
+        return (
+            "warning",
+            f"La proposta és vàlida, però deixa {resum['descobertes']} "
+            "servei(s) sense cobertura.",
+        )
+    if not resum["afectades"] and not resum["proposades"]:
+        return "info", detall.get(
+            "motiu_recomanacio",
+            "El motor no ha detectat cap canvi necessari.",
+        )
+    return "success", "Proposta vàlida i sense serveis descoberts."
 
 
 def _comparacio_operativa(canvis: list[dict]) -> pd.DataFrame:
@@ -226,16 +280,8 @@ def _render_resum_proposta(detall: dict, comparacio: pd.DataFrame) -> None:
     col3.metric("Assignacions modificades", resum["afectades"], border=True)
     col4.metric("Cobertures proposades", resum["proposades"], border=True)
 
-    errors = int(detall.get("errors_validacio") or 0)
-    if errors:
-        st.error(f"La proposta conté {errors} error(s) de validació i no es pot aprovar.")
-    elif resum["descobertes"]:
-        st.warning(
-            f"La proposta és vàlida, però deixa {resum['descobertes']} "
-            "servei(s) sense cobertura."
-        )
-    else:
-        st.success("Proposta vàlida i sense serveis descoberts.")
+    nivell, missatge = _estat_proposta(detall)
+    getattr(st, nivell)(missatge)
 
     if comparacio.empty:
         return
@@ -293,15 +339,20 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
     if st.session_state.pop("reinicia_registre_incidencia", False):
         _reinicia_registre_incidencia()
     ruta = str(db_path)
+    try:
+        rollout = load_planning_rollout_config()
+    except ValueError as error:
+        st.error(str(error))
+        return
     inicialitza_planificacio(ruta)
     treballadors = llista_treballadors(ruta)
     st.header("Incidències")
     st.caption(
-        "Registra la incidència, genera una proposta de cobertura i revisa-la "
+        "Registra la incidència, prepara una reparació i revisa-la "
         "abans d'aplicar-la al pla."
     )
     registrar, incidencies, propostes = st.tabs(
-        ["1. Registrar", "2. Generar proposta", "3. Revisar i aplicar"]
+        ["1. Registrar", "2. Preparar reparació", "3. Revisar i aplicar"]
     )
     with registrar:
         st.caption("Indica què ha passat i a quin treballador afecta.")
@@ -355,7 +406,8 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                         substitut["id"] if substitut else None,
                     )
                     st.session_state["missatge_incidencia_registrada"] = (
-                        f"Incidència #{incidencia_id} registrada. Ara pots generar-ne una proposta."
+                        f"Incidència #{incidencia_id} registrada. Ara pots "
+                        "preparar-ne la reparació."
                     )
                     st.session_state["reinicia_registre_incidencia"] = True
                     st.rerun()
@@ -384,23 +436,60 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                 index=None,
                 placeholder="Selecciona una incidència",
             )
+            abast = (
+                diagnosticar_abast_incidencia(ruta, incidencia["id"])
+                if incidencia
+                else None
+            )
+            sense_pla = bool(
+                abast and abast["assignacions_pla_periode"] == 0
+            )
+            sense_assignacions_afectades = bool(
+                abast
+                and abast["tipus"] != "alta_anticipada"
+                and abast["assignacions_pla_periode"] > 0
+                and abast["assignacions_treballador_periode"] == 0
+            )
+            if sense_pla:
+                st.warning(_missatge_sense_pla(abast))
+            elif sense_assignacions_afectades:
+                st.info(
+                    "Hi ha pla publicat en el període, però aquest treballador "
+                    "no hi té cap assignació activa que calgui reparar."
+                )
+            if sense_pla or sense_assignacions_afectades:
+                st.caption(
+                    "Pots continuar per aplicar la incidència a la disponibilitat, "
+                    "però no es generarà cap canvi de cobertura."
+                )
             if incidencia and st.button(
-                "Generar proposta CP-SAT",
+                "Preparar reparació CP-SAT",
                 type="primary",
                 icon=":material/auto_fix_high:",
+                help=(
+                    "Aplicarà la incidència sense canviar cap cobertura."
+                    if sense_pla or sense_assignacions_afectades
+                    else None
+                ),
             ):
                 proposta = generar_proposta(ruta, incidencia["id"])
-                st.success(f"Proposta #{proposta['id']} generada sense modificar el pla publicat.")
+                st.success(
+                    f"Reparació R-{proposta['id']} preparada sense modificar "
+                    "el pla vigent."
+                )
                 st.rerun()
     with propostes:
         files = llista_propostes(ruta)
-        if not files: st.info("Encara no hi ha propostes.")
+        if not files: st.info("Encara no hi ha reparacions preparades.")
         else:
             st.caption(
-                "Comprova la cobertura i els canvis abans d'aprovar una "
-                "proposta."
+                "Comprova la cobertura i els canvis abans d'aplicar una "
+                "reparació al pla vigent."
             )
             resum_propostes = pd.DataFrame(files)
+            resum_propostes["id"] = resum_propostes["id"].map(
+                lambda proposal_id: f"R-{proposal_id}"
+            )
             columnes_resum = [
                 columna
                 for columna in (
@@ -414,16 +503,19 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                 resum_propostes[columnes_resum],
                 width="stretch",
                 hide_index=True,
+                column_config={
+                    "id": st.column_config.TextColumn("Reparació"),
+                },
             )
             proposta = st.selectbox(
-                "Proposta a revisar",
+                "Reparació a revisar",
                 files,
                 format_func=lambda x: (
-                    f"#{x['id']} · {ETIQUETES_TIPUS[x['tipus']]} · "
+                    f"R-{x['id']} · {ETIQUETES_TIPUS[x['tipus']]} · "
                     f"{x['treballador']} · {x['estat']}"
                 ),
                 index=None,
-                placeholder="Selecciona una proposta",
+                placeholder="Selecciona una reparació",
             )
             if proposta:
                 detall = obtenir_proposta(ruta, proposta["id"])
@@ -432,13 +524,8 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                     if canvi["tipus"] == "candidat_cobertura"
                 ]
                 comparacio = _comparacio_operativa(detall["canvis"])
-                st.subheader("Resum operatiu de la proposta")
+                st.subheader(f"Reparació R-{proposta['id']}")
                 _render_resum_proposta(detall, comparacio)
-                if comparacio.empty:
-                    st.info(
-                        "No hi ha assignacions afectades ni cobertures noves "
-                        "dins del període."
-                    )
                 if candidats and detall.get("motor") != "cp_sat":
                     with st.expander("Veure les opcions del detector anterior"):
                         st.dataframe(
@@ -454,8 +541,8 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                 if detall.get("motor") == "cp_sat":
                     st.caption(
                         "En aprovar, es comprovarà que el pla no hagi canviat "
-                        "i les anul·lacions i cobertures es publicaran en una "
-                        "única transacció."
+                        "i la reparació s'aplicarà al pla vigent en una única "
+                        "transacció. La proposta i l'auditoria es conservaran."
                     )
                 else:
                     st.caption(
@@ -464,23 +551,43 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                         "la replanificació posterior."
                     )
                 if proposta["estat"] == "esborrany":
+                    if not rollout.publication_enabled:
+                        st.info(
+                            "Mode ombra actiu: la reparació es pot consultar, "
+                            "però no aplicar al pla vigent."
+                        )
+                    proposta_amb_canvis = not comparacio.empty
                     confirma = st.checkbox(
-                        "Confirmo que he revisat la proposta",
+                        (
+                            "Confirmo que he revisat la reparació i vull "
+                            "aplicar-la al pla vigent"
+                            if proposta_amb_canvis
+                            else "Confirmo que vull aplicar la incidència sense "
+                            "canvis de cobertura"
+                        ),
                         key=f"aprova_{proposta['id']}",
                     )
                     if st.button(
-                        "Aprovar i aplicar proposta",
+                        (
+                            "Aprovar i aplicar reparació al pla vigent"
+                            if proposta_amb_canvis
+                            else "Aplicar incidència sense canvis de cobertura"
+                        ),
                         type="primary",
                         icon=":material/check_circle:",
                         key=f"boto_aprova_{proposta['id']}",
+                        disabled=not rollout.publication_enabled,
                     ):
                         if not confirma: st.error("Cal confirmar l'aprovació.")
                         else:
                             try:
                                 resultat = aprovar_proposta(ruta, proposta["id"])
                                 missatge = (
-                                    f"Proposta aprovada: {resultat['dies_incidencia']} dies aplicats "
-                                    f"i {resultat['assignacions_anullades']} assignacions anul·lades."
+                                    f"Reparació R-{proposta['id']} aplicada al "
+                                    f"pla vigent: {resultat['dies_incidencia']} "
+                                    "dies d'incidència i "
+                                    f"{resultat['assignacions_anullades']} "
+                                    "assignacions originals anul·lades."
                                 )
                                 if resultat["dies_substitut_activats"]:
                                     missatge += (
@@ -489,15 +596,18 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                                     )
                                 if resultat.get("assignacions_publicades"):
                                     missatge += (
-                                        f" S'han publicat "
+                                        f" S'han activat "
                                         f"{resultat['assignacions_publicades']} "
-                                        "cobertures noves."
+                                        "assignacions substitutives."
                                     )
                                 if resultat.get("serveis_descoberts"):
                                     missatge += (
                                         f" Queden {resultat['serveis_descoberts']} "
                                         "serveis descoberts."
                                     )
+                                missatge += (
+                                    " La proposta i la traçabilitat es conserven."
+                                )
                                 st.success(missatge)
                                 st.rerun()
                             except ValueError as error:

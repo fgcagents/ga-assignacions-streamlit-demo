@@ -63,6 +63,8 @@ class PlanningProblem:
     locked_need_ids: frozenset[str] = field(default_factory=frozenset)
     affected_need_ids: frozenset[str] = field(default_factory=frozenset)
     preferred_assignments: tuple[tuple[str, str], ...] = ()
+    required_assignments: tuple[tuple[str, str], ...] = ()
+    recipient_worker_ids: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         worker_ids = [worker.id for worker in self.workers]
@@ -105,6 +107,12 @@ class PlanningProblem:
                 "Necessitats afectades desconegudes: "
                 + ", ".join(sorted(unknown_affected))
             )
+        unknown_recipients = self.recipient_worker_ids - worker_id_set
+        if unknown_recipients:
+            raise ValueError(
+                "Treballadors receptors desconeguts: "
+                + ", ".join(sorted(unknown_recipients))
+            )
         if self.locked_need_ids & self.affected_need_ids:
             raise ValueError(
                 "Una necessitat no pot estar bloquejada i afectada alhora"
@@ -124,6 +132,17 @@ class PlanningProblem:
             if need_id not in need_id_set or worker_id not in worker_id_set:
                 raise ValueError(
                     "Preferència d'assignació desconeguda: "
+                    f"{worker_id} -> {need_id}"
+                )
+        required_need_ids = [need_id for need_id, _ in self.required_assignments]
+        if len(required_need_ids) != len(set(required_need_ids)):
+            raise ValueError(
+                "Només es pot exigir un treballador per necessitat"
+            )
+        for need_id, worker_id in self.required_assignments:
+            if need_id not in need_id_set or worker_id not in worker_id_set:
+                raise ValueError(
+                    "Preassignació obligatòria desconeguda: "
                     f"{worker_id} -> {need_id}"
                 )
 

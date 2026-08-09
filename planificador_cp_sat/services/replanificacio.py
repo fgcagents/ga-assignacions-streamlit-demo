@@ -14,7 +14,8 @@ from typing import Any
 from urllib.parse import quote
 
 
-PILOT_SRC = Path(__file__).resolve().parent / "cp_sat_pilot" / "src"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PILOT_SRC = PROJECT_ROOT / "cp_sat_pilot" / "src"
 if str(PILOT_SRC) not in sys.path:
     sys.path.insert(0, str(PILOT_SRC))
 
@@ -28,6 +29,21 @@ from cp_sat_pilot import (  # noqa: E402
 )
 from cp_sat_pilot.sqlite_adapter import (  # noqa: E402
     load_problem_from_sqlite,
+)
+from planificador_cp_sat.domain import (  # noqa: E402
+    PlanningExecutionRequest,
+    PlanningInputAdjustments,
+    PlanningScope,
+    PlanningTrigger,
+    PlanningTriggerKind,
+)
+from planificador_cp_sat.services.preparacio_planificacio import (  # noqa: E402
+    PreparedPlanningProblem,
+    prepare_planning_problem,
+)
+from planificador_cp_sat.services.proposta_planificacio import (  # noqa: E402
+    PlanningProposal,
+    generate_planning_proposal,
 )
 
 
@@ -61,6 +77,7 @@ class IncidentPlanningContext:
     problem: PlanningProblem
     sources: tuple[PlanSource, ...]
     snapshot_hash: str
+    prepared: PreparedPlanningProblem
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +85,7 @@ class IncidentCpSatDraft:
     context: IncidentPlanningContext
     result: SolveResult | None
     changes: tuple[dict[str, Any], ...]
+    proposal: PlanningProposal | None = None
 
 
 def _readonly_connection(database_path: str | Path) -> sqlite3.Connection:
@@ -144,7 +162,7 @@ def plan_snapshot_hash(rows: list[sqlite3.Row]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def prepare_incident_problem(
+def _prepare_incident_problem_legacy(
     database_path: str | Path,
     incidence_id: int,
 ) -> IncidentPlanningContext:
@@ -392,6 +410,204 @@ def prepare_incident_problem(
         problem=problem,
         sources=tuple(sources),
         snapshot_hash=plan_snapshot_hash(snapshot_rows),
+        prepared=PreparedPlanningProblem(
+            request=PlanningExecutionRequest(
+                scope=PlanningScope(start_date, end_date),
+            ),
+            snapshot=prepare_planning_problem(
+                database_path,
+                PlanningExecutionRequest(
+                    scope=PlanningScope(start_date, end_date),
+                ),
+            ).snapshot,
+            classification=prepare_planning_problem(
+                database_path,
+                PlanningExecutionRequest(
+                    scope=PlanningScope(start_date, end_date),
+                ),
+            ).classification,
+            problem=problem,
+        ),
+    )
+
+
+def prepare_incident_problem(
+    database_path: str | Path,
+    incidence_id: int,
+) -> IncidentPlanningContext:
+    """Adapta una incidència al contracte i constructor genèrics."""
+    with closing(_readonly_connection(database_path)) as connection:
+        incidence = connection.execute(
+            "SELECT * FROM incidencies_personal WHERE id = ?",
+            (incidence_id,),
+        ).fetchone()
+        if incidence is None:
+            raise ValueError("No s'ha trobat la incidència")
+        incident_type = str(incidence["tipus"])
+        if incident_type not in TIPUS_CP_SAT:
+            raise ValueError(f"El tipus {incident_type} encara no usa CP-SAT")
+
+        start_date = date.fromisoformat(incidence["data_inici"])
+        end_date = date.fromisoformat(incidence["data_fi"])
+        affected_worker_id = str(incidence["treballador_id"])
+        released_dates: set[date] = set()
+        if incident_type == "alta_anticipada":
+            last_sick_day = connection.execute(
+                """
+                SELECT MAX(data) FROM descansos_dies
+                WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+                  AND origen = 'baixa' AND data >= ?
+                """,
+                (affected_worker_id, start_date.isoformat()),
+            ).fetchone()[0]
+            if last_sick_day:
+                end_date = max(end_date, date.fromisoformat(last_sick_day))
+            released_dates = {
+                date.fromisoformat(row[0])
+                for row in connection.execute(
+                    """
+                    SELECT data FROM descansos_dies
+                    WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+                      AND origen = 'baixa' AND data BETWEEN ? AND ?
+                    """,
+                    (
+                        affected_worker_id,
+                        start_date.isoformat(),
+                        end_date.isoformat(),
+                    ),
+                )
+            }
+
+        substitute_id = (
+            str(incidence["treballador_substitut_id"])
+            if incidence["treballador_substitut_id"] is not None
+            else None
+        )
+        if incident_type == "substitucio":
+            if substitute_id is None:
+                raise ValueError("La substitució no té treballador substitut")
+            conflict = connection.execute(
+                """
+                SELECT 1 FROM descansos_dies
+                WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+                  AND data BETWEEN ? AND ?
+                  AND COALESCE(origen, '') <> 'base'
+                LIMIT 1
+                """,
+                (
+                    substitute_id,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                ),
+            ).fetchone()
+            active_substitution = connection.execute(
+                """
+                SELECT 1 FROM descansos_dies
+                WHERE CAST(treballador_substitut_id AS TEXT) = CAST(? AS TEXT)
+                  AND data BETWEEN ? AND ?
+                  AND CAST(treballador_id AS TEXT) <> CAST(? AS TEXT)
+                LIMIT 1
+                """,
+                (
+                    substitute_id,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    affected_worker_id,
+                ),
+            ).fetchone()
+            if conflict or active_substitution:
+                raise ValueError(
+                    "El substitut indicat té una indisponibilitat no substituïble"
+                )
+
+        if incident_type == "alta_anticipada":
+            affected_need_ids = {
+                f"{row['data']}::{row['servei']}"
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT c.data, c.servei
+                    FROM cobertura c
+                    LEFT JOIN assig_grup_T a
+                      ON a.data = c.data AND a.torn = c.servei
+                     AND a.estat_planificacio IN ('publicada', 'bloquejada')
+                    WHERE c.data BETWEEN ? AND ? AND a.id IS NULL
+                    """,
+                    (start_date.isoformat(), end_date.isoformat()),
+                )
+            }
+        else:
+            affected_need_ids = {
+                f"{row['data']}::{row['torn']}"
+                for row in connection.execute(
+                    """
+                    SELECT data, torn FROM assig_grup_T
+                    WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+                      AND data BETWEEN ? AND ?
+                      AND estat_planificacio IN ('publicada', 'bloquejada')
+                    """,
+                    (
+                        affected_worker_id,
+                        start_date.isoformat(),
+                        end_date.isoformat(),
+                    ),
+                )
+            }
+
+    incident_dates = {
+        start_date + timedelta(days=offset)
+        for offset in range((end_date - start_date).days + 1)
+    }
+    unavailable = (
+        frozenset()
+        if incident_type == "alta_anticipada"
+        else frozenset((affected_worker_id, day) for day in incident_dates)
+    )
+    released = {
+        (affected_worker_id, day) for day in released_dates
+    }
+    if incident_type == "substitucio" and substitute_id is not None:
+        released.update((substitute_id, day) for day in incident_dates)
+    preferences = (
+        tuple((need_id, substitute_id) for need_id in sorted(affected_need_ids))
+        if incident_type == "substitucio" and substitute_id is not None
+        else ()
+    )
+    request = PlanningExecutionRequest(
+        scope=PlanningScope(start_date, end_date),
+        trigger=PlanningTrigger(
+            kind=PlanningTriggerKind.INCIDENT,
+            source_id=incidence_id,
+            affected_need_ids=affected_need_ids,
+            reason=f"Incidència {incident_type}",
+        ),
+        adjustments=PlanningInputAdjustments(
+            unavailable_worker_dates=unavailable,
+            released_worker_dates=released,
+            preferred_assignments=preferences,
+            allow_active_assignments_without_coverage=True,
+        ),
+    )
+    prepared = prepare_planning_problem(database_path, request)
+    sources = tuple(
+        PlanSource(
+            assignment_id=item.assignment_id,
+            need_id=item.need_id,
+            worker_id=item.worker_id,
+            state=item.state,
+            date=item.date,
+            turn=item.service_id,
+        )
+        for item in prepared.snapshot.assignments
+    )
+    return IncidentPlanningContext(
+        incidence_id=incidence_id,
+        incident_type=incident_type,
+        start_date=start_date,
+        end_date=end_date,
+        problem=prepared.problem,
+        sources=sources,
+        snapshot_hash=prepared.snapshot.fingerprint,
+        prepared=prepared,
     )
 
 
@@ -512,20 +728,19 @@ def generate_incident_draft(
     config: SolverConfig | None = None,
 ) -> IncidentCpSatDraft:
     context = prepare_incident_problem(database_path, incidence_id)
-    if (
-        not context.problem.affected_need_ids
-        and context.incident_type != "alta_anticipada"
-    ):
-        return IncidentCpSatDraft(context=context, result=None, changes=())
-    result = CpSatPlanner(context.problem).solve(
-        config
-        or SolverConfig(
+    solver_config = config or SolverConfig(
             max_time_seconds=15,
             equity_time_seconds=15,
             num_workers=8,
             random_seed=0,
         )
+    proposal = generate_planning_proposal(
+        context.prepared,
+        config=solver_config,
+        seeds=(solver_config.random_seed,),
+        force_all_seeds=True,
     )
+    result = proposal.result
     if not result.feasible:
         raise ValueError(
             "CP-SAT no ha produït cap proposta factible i validada"
@@ -534,4 +749,5 @@ def generate_incident_draft(
         context=context,
         result=result,
         changes=_changes_from_result(context, result),
+        proposal=proposal,
     )

@@ -1,6 +1,6 @@
 """Cicle controlat d'incidències i propostes de replanificació.
 
-No executa l'algorisme genètic ni modifica el pla publicat durant la simulació.
+No modifica el pla publicat durant la simulació.
 Només l'aprovació explícita aplica la incidència i anul·la les assignacions afectades.
 """
 
@@ -13,7 +13,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from servei_descansos import _aplica_substitucio_dia, _conflictes_substitut
+from planificador_cp_sat.services.descansos import (
+    _aplica_substitucio_dia,
+    _conflictes_substitut,
+)
 
 
 TIPUS_INCIDENCIA = ("baixa", "vacances", "substitucio", "alta_anticipada", "prorroga_baixa")
@@ -129,6 +132,7 @@ def inicialitza_planificacio(db_path: str | Path) -> None:
         }
         for nom, definicio in (
             ("motor", "TEXT NOT NULL DEFAULT 'detector'"),
+            ("execucio_planificacio_id", "INTEGER"),
             ("snapshot_hash", "TEXT"),
             ("solver_status", "TEXT"),
             ("necessitats_cobertes", "INTEGER"),
@@ -351,6 +355,79 @@ def llista_incidencies(db_path: str | Path) -> list[dict[str, Any]]:
     return _files(rows)
 
 
+def _diagnostica_abast_incidencia(
+    conn: sqlite3.Connection,
+    incidencia_id: int,
+) -> dict[str, Any]:
+    incidencia = conn.execute(
+        """
+        SELECT id, treballador_id, tipus, data_inici, data_fi
+        FROM incidencies_personal
+        WHERE id = ?
+        """,
+        (incidencia_id,),
+    ).fetchone()
+    if not incidencia:
+        raise ValueError("No s'ha trobat la incidència")
+
+    pla_global = conn.execute(
+        """
+        SELECT MIN(data) AS data_inici, MAX(data) AS data_fi,
+               COUNT(*) AS assignacions
+        FROM assig_grup_T
+        WHERE estat_planificacio IN ('publicada', 'bloquejada')
+        """
+    ).fetchone()
+    pla_periode = conn.execute(
+        """
+        SELECT COUNT(*) AS assignacions,
+               COUNT(DISTINCT data) AS dies
+        FROM assig_grup_T
+        WHERE data BETWEEN ? AND ?
+          AND estat_planificacio IN ('publicada', 'bloquejada')
+        """,
+        (incidencia["data_inici"], incidencia["data_fi"]),
+    ).fetchone()
+    afectades = conn.execute(
+        """
+        SELECT COUNT(*) AS assignacions
+        FROM assig_grup_T
+        WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+          AND data BETWEEN ? AND ?
+          AND estat_planificacio IN ('publicada', 'bloquejada')
+        """,
+        (
+            incidencia["treballador_id"],
+            incidencia["data_inici"],
+            incidencia["data_fi"],
+        ),
+    ).fetchone()
+    return {
+        "incidencia_id": int(incidencia["id"]),
+        "tipus": incidencia["tipus"],
+        "data_inici": incidencia["data_inici"],
+        "data_fi": incidencia["data_fi"],
+        "pla_data_inici": pla_global["data_inici"],
+        "pla_data_fi": pla_global["data_fi"],
+        "assignacions_pla_total": int(pla_global["assignacions"] or 0),
+        "assignacions_pla_periode": int(pla_periode["assignacions"] or 0),
+        "dies_amb_pla_periode": int(pla_periode["dies"] or 0),
+        "assignacions_treballador_periode": int(
+            afectades["assignacions"] or 0
+        ),
+    }
+
+
+def diagnosticar_abast_incidencia(
+    db_path: str | Path,
+    incidencia_id: int,
+) -> dict[str, Any]:
+    """Comprova si la incidència coincideix amb el pla publicat reparable."""
+    inicialitza_planificacio(db_path)
+    with _connexio(db_path) as conn:
+        return _diagnostica_abast_incidencia(conn, incidencia_id)
+
+
 def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
     """Genera una simulació CP-SAT quan el tipus d'incidència ja és compatible."""
     inicialitza_planificacio(db_path)
@@ -365,7 +442,9 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
         return _generar_proposta_detector(db_path, incidencia_id)
 
     try:
-        from servei_replanificacio_cp_sat import generate_incident_draft
+        from planificador_cp_sat.services.replanificacio import (
+            generate_incident_draft,
+        )
     except ModuleNotFoundError as exc:
         if exc.name == "ortools":
             raise ValueError(
@@ -375,6 +454,13 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
 
     draft = generate_incident_draft(db_path, incidencia_id)
     result = draft.result
+    execution_id = None
+    if draft.proposal is not None:
+        from planificador_cp_sat.services.persistencia_planificacio import (
+            save_planning_proposal,
+        )
+
+        execution_id = save_planning_proposal(db_path, draft.proposal)
     with _connexio(db_path) as conn:
         incidencia_actual = conn.execute(
             "SELECT estat FROM incidencies_personal WHERE id = ?",
@@ -419,6 +505,7 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
             """
             UPDATE propostes_replanificacio
             SET motor = 'cp_sat', data_inici = ?, data_fi = ?,
+                execucio_planificacio_id = ?,
                 snapshot_hash = ?, solver_status = ?,
                 necessitats_cobertes = ?, necessitats_totals = ?,
                 errors_validacio = ?
@@ -427,6 +514,7 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
             (
                 draft.context.start_date.isoformat(),
                 draft.context.end_date.isoformat(),
+                execution_id,
                 draft.context.snapshot_hash,
                 result.status if result else "NO_EXECUTAT",
                 result.covered_needs if result else 0,
@@ -594,8 +682,13 @@ def obtenir_proposta(db_path: str | Path, proposta_id: int) -> dict[str, Any]:
             str(fila["id"]): fila["treballador"]
             for fila in conn.execute("SELECT id, treballador FROM treballadors")
         }
+        diagnostic_abast = _diagnostica_abast_incidencia(
+            conn,
+            int(proposta["incidencia_id"]),
+        )
     resultat = dict(proposta)
     resultat["canvis"] = _files(canvis)
+    resultat["diagnostic_abast"] = diagnostic_abast
     for canvi in resultat["canvis"]:
         treballador_id = canvi.get("treballador_id")
         canvi["treballador_nom"] = (
@@ -623,9 +716,26 @@ def obtenir_proposta(db_path: str | Path, proposta_id: int) -> dict[str, Any]:
             f"{assignacions_proposades} cobertura/es proposada/es, "
             "sense serveis descoberts."
         )
+    elif diagnostic_abast["assignacions_pla_periode"] == 0:
+        resultat["recomanacio"] = "No hi ha pla publicat en el període"
+        resultat["motiu_recomanacio"] = (
+            "La incidència no coincideix amb cap assignació publicada o "
+            "bloquejada i, per tant, no s'ha executat cap reparació."
+        )
+    elif (
+        diagnostic_abast["tipus"] != "alta_anticipada"
+        and diagnostic_abast["assignacions_treballador_periode"] == 0
+    ):
+        resultat["recomanacio"] = "No cal replanificació"
+        resultat["motiu_recomanacio"] = (
+            "Hi ha pla publicat dins del període, però el treballador de la "
+            "incidència no hi té cap assignació activa."
+        )
     else:
         resultat["recomanacio"] = "No cal replanificació"
-        resultat["motiu_recomanacio"] = "No s'han detectat assignacions afectades ni serveis sense cobertura mínima."
+        resultat["motiu_recomanacio"] = (
+            "El motor ha revisat el període i no ha detectat cap canvi necessari."
+        )
     return resultat
 
 
@@ -784,12 +894,12 @@ def _es_canvi_torn(
     return int(bool(required and worker_turns and required.isdisjoint(worker_turns)))
 
 
-def _aprovar_proposta_cp_sat(
+def _aprovar_proposta_cp_sat_legacy(
     conn: sqlite3.Connection,
     proposta: sqlite3.Row,
     proposta_id: int,
 ) -> dict[str, int]:
-    from servei_replanificacio_cp_sat import (
+    from planificador_cp_sat.services.replanificacio import (
         plan_snapshot_hash,
         prepare_incident_problem,
     )
@@ -1268,9 +1378,248 @@ def _aprovar_proposta_cp_sat(
     }
 
 
+def _aprovar_proposta_cp_sat(
+    db_path: str | Path,
+    proposta: dict[str, Any],
+    proposta_id: int,
+) -> dict[str, int]:
+    """Publica una incidència amb el publicador diferencial comú."""
+    from planificador_cp_sat.services.persistencia_planificacio import (
+        load_planning_execution,
+        validate_planning_execution,
+    )
+    from planificador_cp_sat.services.proposta_planificacio import (
+        PlanningChangeKind,
+    )
+    from planificador_cp_sat.services.publicacio_planificacio import (
+        apply_planning_changeset,
+    )
+
+    execution_id = proposta.get("execucio_planificacio_id")
+    if execution_id is None:
+        raise ValueError(
+            "La proposta històrica es pot consultar però no publicar amb "
+            "el flux actual; cal recalcular-la."
+        )
+
+    stored = load_planning_execution(db_path, int(execution_id))
+    with _connexio(db_path) as connection:
+        legacy_changes = connection.execute(
+            """SELECT * FROM proposta_canvis
+               WHERE proposta_id = ? ORDER BY id""",
+            (proposta_id,),
+        ).fetchall()
+        proposed_by_need = {
+            str(row["necessitat_id"]): str(row["treballador_id"])
+            for row in legacy_changes
+            if row["tipus"] == "assignacio_proposada"
+        }
+        workers = {
+            str(row["id"]): str(row["grup"])
+            for row in connection.execute("SELECT id, grup FROM treballadors")
+        }
+    for change in stored.changes:
+        if change.proposed is None:
+            continue
+        legacy_worker = proposed_by_need.get(change.need_id)
+        if (
+            legacy_worker != change.proposed.worker_id
+            or workers.get(legacy_worker) != "T"
+        ):
+            raise ValueError(
+                "La proposta ja no compleix les restriccions dures: "
+                f"treballador proposat invàlid per {change.need_id}"
+            )
+
+    if stored.state == "esborrany":
+        try:
+            stored = validate_planning_execution(db_path, int(execution_id))
+        except ValueError as error:
+            raise ValueError(
+                "El pla publicat ha canviat des que es va generar la proposta. "
+                "Cal recalcular-la abans d'aprovar."
+            ) from error
+    elif stored.state != "validada":
+        raise ValueError("La proposta genèrica no està disponible per publicar")
+
+    start = date.fromisoformat(str(proposta["data_inici"]))
+    end = date.fromisoformat(str(proposta["data_fi"]))
+    incident_days = (end - start).days + 1
+    hook_result: dict[str, int] = {}
+
+    def apply_incident_effects(
+        connection: sqlite3.Connection,
+        current_execution: Any,
+        new_ids: dict[int, int],
+    ) -> dict[str, Any]:
+        substitute_days_activated = 0
+        if proposta["tipus"] == "alta_anticipada":
+            cursor = connection.execute(
+                """DELETE FROM descansos_dies
+                   WHERE CAST(treballador_id AS TEXT) = CAST(? AS TEXT)
+                     AND origen = 'baixa' AND data BETWEEN ? AND ?""",
+                (
+                    proposta["treballador_id"],
+                    start.isoformat(),
+                    end.isoformat(),
+                ),
+            )
+            applied_days = cursor.rowcount
+        elif proposta["tipus"] == "substitucio":
+            substitute_id = proposta["treballador_substitut_id"]
+            if substitute_id is None:
+                raise ValueError("La substitució no té treballador substitut")
+            conflicts = _conflictes_substitut(
+                connection,
+                proposta["treballador_id"],
+                substitute_id,
+                start,
+                end,
+            )
+            if conflicts:
+                dates = ", ".join(sorted({item["data"] for item in conflicts}))
+                raise ValueError(
+                    "No es pot aprovar la substitució: el substitut té "
+                    f"una indisponibilitat els dies {dates}."
+                )
+            current_day = start
+            while current_day <= end:
+                result_day = _aplica_substitucio_dia(
+                    connection,
+                    proposta["treballador_id"],
+                    substitute_id,
+                    current_day,
+                    f"Incidència aprovada #{proposta['incidencia_id']}",
+                    f"incidencia:{proposta['incidencia_id']}",
+                )
+                substitute_days_activated += int(
+                    result_day["descansos_substitut_retirats"] > 0
+                )
+                current_day += timedelta(days=1)
+            applied_days = incident_days
+        else:
+            origin = (
+                "baixa"
+                if proposta["tipus"] in ("baixa", "prorroga_baixa")
+                else "temporal"
+            )
+            current_day = start
+            while current_day <= end:
+                connection.execute(
+                    """INSERT OR IGNORE INTO descansos_dies
+                       (treballador_id, data, origen, motiu,
+                        treballador_substitut_id)
+                       VALUES (?, ?, ?, ?, NULL)""",
+                    (
+                        proposta["treballador_id"],
+                        current_day.isoformat(),
+                        origin,
+                        f"Incidència aprovada #{proposta['incidencia_id']}",
+                    ),
+                )
+                current_day += timedelta(days=1)
+            applied_days = incident_days
+
+        for change in current_execution.changes:
+            assignment_id = new_ids.get(change.id)
+            if assignment_id is None:
+                continue
+            if change.previous_assignment_id is not None:
+                connection.execute(
+                    """UPDATE proposta_canvis SET assignacio_nova_id = ?
+                       WHERE proposta_id = ?
+                         AND tipus = 'assignacio_proposada'
+                         AND assignacio_id = ?""",
+                    (
+                        assignment_id,
+                        proposta_id,
+                        change.previous_assignment_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """UPDATE proposta_canvis SET assignacio_nova_id = ?
+                       WHERE proposta_id = ?
+                         AND tipus = 'assignacio_proposada'
+                         AND assignacio_id IS NULL AND necessitat_id = ?""",
+                    (assignment_id, proposta_id, change.need_id),
+                )
+
+        connection.execute(
+            """UPDATE propostes_replanificacio
+               SET estat = 'aprovada', aprovada_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND estat = 'esborrany'""",
+            (proposta_id,),
+        )
+        connection.execute(
+            "UPDATE incidencies_personal SET estat = 'aprovada' WHERE id = ?",
+            (proposta["incidencia_id"],),
+        )
+        uncovered = sum(
+            row["tipus"] == "servei_sense_cobertura"
+            for row in legacy_changes
+        )
+        annulled = sum(
+            change.kind is not PlanningChangeKind.ADDITION
+            for change in current_execution.changes
+        )
+        published = sum(
+            change.kind is not PlanningChangeKind.REMOVAL
+            for change in current_execution.changes
+        )
+        _audita(
+            connection,
+            "proposta",
+            proposta_id,
+            "aprovada_cp_sat_generic",
+            (
+                f"execucio={execution_id}; {applied_days} dies aplicats; "
+                f"{annulled} assignacions anul·lades; "
+                f"{published} assignacions publicades; "
+                f"{uncovered} serveis descoberts"
+            ),
+        )
+        hook_result.update(
+            {
+                "dies_incidencia": applied_days,
+                "assignacions_anullades": annulled,
+                "assignacions_publicades": published,
+                "serveis_descoberts": uncovered,
+                "dies_substitut_activats": substitute_days_activated,
+            }
+        )
+        return dict(hook_result)
+
+    apply_planning_changeset(
+        db_path,
+        int(execution_id),
+        transaction_hook=apply_incident_effects,
+    )
+    return hook_result
+
+
 def aprovar_proposta(db_path: str | Path, proposta_id: int) -> dict[str, int]:
     """Aplica una proposta aprovada: registra el descans i anul·la només el pla afectat."""
     inicialitza_planificacio(db_path)
+    with _connexio(db_path) as read_connection:
+        current = read_connection.execute(
+            """SELECT p.*, i.treballador_id, i.treballador_substitut_id,
+                      i.tipus, i.data_inici, i.data_fi
+               FROM propostes_replanificacio p
+               JOIN incidencies_personal i ON i.id = p.incidencia_id
+               WHERE p.id = ?""",
+            (proposta_id,),
+        ).fetchone()
+    if not current or current["estat"] != "esborrany":
+        raise ValueError("La proposta no està disponible per aprovar")
+    current_payload = dict(current)
+    if current_payload["motor"] == "cp_sat":
+        return _aprovar_proposta_cp_sat(
+            db_path,
+            current_payload,
+            proposta_id,
+        )
+
     with _connexio(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         proposta = conn.execute(
@@ -1280,8 +1629,6 @@ def aprovar_proposta(db_path: str | Path, proposta_id: int) -> dict[str, int]:
         ).fetchone()
         if not proposta or proposta["estat"] != "esborrany":
             raise ValueError("La proposta no està disponible per aprovar")
-        if proposta["motor"] == "cp_sat":
-            return _aprovar_proposta_cp_sat(conn, proposta, proposta_id)
         if proposta["tipus"] == "alta_anticipada":
             cursor = conn.execute(
                 "DELETE FROM descansos_dies WHERE treballador_id = ? AND origen = 'baixa' AND data >= ?",

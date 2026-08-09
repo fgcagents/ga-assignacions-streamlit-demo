@@ -29,9 +29,24 @@ class HardConstraintSet:
         self.history_by_worker: dict[
             str, tuple[HistoricalAssignment, ...]
         ] = group_history_by_worker(problem.history)
+        self.reference_by_need = {
+            assignment.need_id: assignment
+            for assignment in problem.reference_assignments
+        }
+        self.required_by_need = dict(problem.required_assignments)
 
     def is_static_candidate(self, worker: Worker, need: Need) -> bool:
         """Aplica les regles individuals abans de crear cap variable."""
+        if (
+            self.problem.recipient_worker_ids
+            and worker.id not in self.problem.recipient_worker_ids
+            and not (
+                need.id in self.problem.locked_need_ids
+                and self.reference_by_need[need.id].worker_id == worker.id
+            )
+            and self.required_by_need.get(need.id) != worker.id
+        ):
+            return False
         if worker.group != "T":
             return False
         if (worker.id, need.date) in self.problem.exclusions:
@@ -84,6 +99,7 @@ class HardConstraintSet:
             model, vars_by_need
         )
         self._add_locked_assignments(model, assignment_vars)
+        self._add_required_assignments(model, assignment_vars)
         self._add_person_day(model, vars_by_worker_day)
         incompatibility_constraints = self._add_pair_compatibility(
             model, assignment_vars, need_ids_by_worker
@@ -136,6 +152,20 @@ class HardConstraintSet:
                     "L'assignació bloquejada ja no compleix les "
                     "restriccions dures: "
                     f"{reference.worker_id} -> {need_id}"
+                )
+            model.add(variable == 1)
+
+    def _add_required_assignments(
+        self,
+        model: cp_model.CpModel,
+        assignment_vars: dict[tuple[str, str], cp_model.IntVar],
+    ) -> None:
+        for need_id, worker_id in self.problem.required_assignments:
+            variable = assignment_vars.get((worker_id, need_id))
+            if variable is None:
+                raise ValueError(
+                    "La preassignació ja no compleix les restriccions dures: "
+                    f"{worker_id} -> {need_id}"
                 )
             model.add(variable == 1)
 
@@ -230,9 +260,23 @@ class HardConstraintSet:
 
         self._validate_need_once(by_need, errors)
         self._validate_locked(by_need, errors)
+        self._validate_required(by_need, errors)
         self._validate_person_day(by_worker_day, errors)
         self._validate_compatibility_and_hours(by_worker, errors)
         return errors
+
+    def _validate_required(
+        self,
+        by_need: dict[str, list[Assignment]],
+        errors: list[str],
+    ) -> None:
+        for need_id, worker_id in self.problem.required_assignments:
+            assigned = by_need.get(need_id, [])
+            if not any(item.worker_id == worker_id for item in assigned):
+                errors.append(
+                    "Preassignació obligatòria no respectada: "
+                    f"{worker_id} -> {need_id}"
+                )
 
     @staticmethod
     def _validate_need_once(

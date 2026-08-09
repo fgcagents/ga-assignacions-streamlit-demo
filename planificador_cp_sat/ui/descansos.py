@@ -8,9 +8,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from ui_components import claus_selector_treballador, selector_treballador
+from planificador_cp_sat.ui.components import (
+    claus_selector_treballador,
+    selector_treballador,
+)
 
-from servei_descansos import (
+from planificador_cp_sat.services.descansos import (
     ORIGENS_EDITABLES,
     afegir_periode,
     crear_substitucio,
@@ -440,7 +443,7 @@ def _seccio_disponibilitat(db_path: str) -> None:
 def render_pestanya_descansos(db_path: str | Path) -> None:
     """Renderitza la pantalla completa de descansos dins de l'aplicació principal."""
     ruta_db = str(db_path)
-    st.header("Consulta")
+    st.header("Personal i disponibilitat")
     st.caption(
         "Consulta calendaris, disponibilitat i serveis descoberts. Les "
         "incidències es registren des de la pantalla Incidències."

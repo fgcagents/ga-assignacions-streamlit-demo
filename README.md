@@ -1,15 +1,12 @@
 # Prototip CP-SAT per a Streamlit Community Cloud
 
-> **Estat documental:** aquesta còpia desplegable correspon al prototip
-> anterior a la unificació incremental del 05/08/2026. No s’ha d’utilitzar per
-> validar el mode ombra, l’abast parcial o el publicador diferencial fins que
-> se n’executi el protocol de promoció. La documentació vigent és a
-> [`docs/GUIA_USUARI.md`](../../docs/GUIA_USUARI.md) i
-> [`docs/GUIA_TECNICA_OPERACIO.md`](../../docs/GUIA_TECNICA_OPERACIO.md).
+> **Estat documental:** còpia sincronitzada el 09/08/2026 amb l’aplicació
+> multipàgina vigent, inclosos el resum, la planificació incremental, el pla
+> publicat, la gestió de personal i les incidències.
 
 Aquest directori és una còpia desplegable i independent del projecte de
-treball. Conté només l'aplicació unificada, els serveis que utilitza i el
-paquet del solver CP-SAT.
+treball. Conté l'aplicació multipàgina, els serveis que utilitza i el paquet
+del solver CP-SAT.
 
 ## Seguretat de les dades
 
