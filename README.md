@@ -1,8 +1,15 @@
 # Prototip CP-SAT per a Streamlit Community Cloud
 
-> **Estat documental:** còpia sincronitzada el 09/08/2026 amb l’aplicació
+> **Estat documental:** còpia sincronitzada el 20/08/2026 amb l’aplicació
 > multipàgina vigent, inclosos el resum, la planificació incremental, el pla
-> publicat, la gestió de personal i les incidències.
+> publicat, la gestió de personal i les incidències. El motor incorpora el
+> límit dur d'11 dies de treball consecutius. L'ordre de resolució és màxima
+> cobertura, estabilitat opcional, equitat d'hores del grup T i desempat simple
+> pel total de canvis de zona i torn. La referència contractual del grup T és
+> el 75% de 1.605 hores i només es prorrateja per les absències pròpies; no és
+> un mínim rígid ni s'amplia amb les baixes del grup A. Els diagnòstics es
+> mantenen com a informació posterior, sense fases addicionals, índex compost,
+> reintents dirigits ni portes d'aprovació manual.
 
 Aquest directori és una còpia desplegable i independent del projecte de
 treball. Conté l'aplicació multipàgina, els serveis que utilitza i el paquet

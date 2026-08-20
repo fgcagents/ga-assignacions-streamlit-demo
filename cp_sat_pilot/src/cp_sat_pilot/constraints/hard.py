@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from itertools import combinations
 from typing import Iterable
 
@@ -17,6 +17,10 @@ from ..domain import (
     group_history_by_worker,
 )
 from .types import CoreModel
+
+
+MAX_CONSECUTIVE_WORK_DAYS = 11
+CONSECUTIVE_WORK_WINDOW_DAYS = MAX_CONSECUTIVE_WORK_DAYS + 1
 
 
 class HardConstraintSet:
@@ -101,6 +105,7 @@ class HardConstraintSet:
         self._add_locked_assignments(model, assignment_vars)
         self._add_required_assignments(model, assignment_vars)
         self._add_person_day(model, vars_by_worker_day)
+        self._add_max_consecutive_work_days(model, vars_by_worker_day)
         incompatibility_constraints = self._add_pair_compatibility(
             model, assignment_vars, need_ids_by_worker
         )
@@ -179,6 +184,43 @@ class HardConstraintSet:
         for variables in vars_by_worker_day.values():
             if len(variables) > 1:
                 model.add_at_most_one(variables)
+
+    def _add_max_consecutive_work_days(
+        self,
+        model: cp_model.CpModel,
+        vars_by_worker_day: dict[
+            tuple[str, date], list[cp_model.IntVar]
+        ],
+    ) -> None:
+        """Limita a onze qualsevol ratxa que intersecti l'horitzó."""
+        if not self.problem.needs:
+            return
+
+        first_day = min(need.date for need in self.problem.needs)
+        last_day = max(need.date for need in self.problem.needs)
+        historical_days = {
+            worker_id: {
+                assignment.start.date() for assignment in assignments
+            }
+            for worker_id, assignments in self.history_by_worker.items()
+        }
+
+        for worker_id in self.workers:
+            window_start = first_day - timedelta(
+                days=MAX_CONSECUTIVE_WORK_DAYS
+            )
+            while window_start <= last_day:
+                work_terms: list[int | cp_model.IntVar] = []
+                for offset in range(CONSECUTIVE_WORK_WINDOW_DAYS):
+                    day = window_start + timedelta(days=offset)
+                    if day in historical_days.get(worker_id, set()):
+                        work_terms.append(1)
+                    else:
+                        work_terms.extend(
+                            vars_by_worker_day.get((worker_id, day), ())
+                        )
+                model.add(sum(work_terms) <= MAX_CONSECUTIVE_WORK_DAYS)
+                window_start += timedelta(days=1)
 
     def _add_pair_compatibility(
         self,
@@ -262,6 +304,7 @@ class HardConstraintSet:
         self._validate_locked(by_need, errors)
         self._validate_required(by_need, errors)
         self._validate_person_day(by_worker_day, errors)
+        self._validate_max_consecutive_work_days(by_worker, errors)
         self._validate_compatibility_and_hours(by_worker, errors)
         return errors
 
@@ -321,6 +364,49 @@ class HardConstraintSet:
                     "Més d'una assignació el mateix dia: "
                     f"{worker_id} / {day}"
                 )
+
+    def _validate_max_consecutive_work_days(
+        self,
+        by_worker: dict[str, list[Assignment]],
+        errors: list[str],
+    ) -> None:
+        """Replica el límit del model sobre la proposta extreta."""
+        if not self.problem.needs:
+            return
+
+        first_day = min(need.date for need in self.problem.needs)
+        last_day = max(need.date for need in self.problem.needs)
+        historical_days = {
+            worker_id: {
+                assignment.start.date() for assignment in assignments
+            }
+            for worker_id, assignments in self.history_by_worker.items()
+        }
+
+        for worker_id in self.workers:
+            worked_days = historical_days.get(worker_id, set()) | {
+                assignment.date
+                for assignment in by_worker.get(worker_id, ())
+            }
+            window_start = first_day - timedelta(
+                days=MAX_CONSECUTIVE_WORK_DAYS
+            )
+            while window_start <= last_day:
+                window_end = window_start + timedelta(
+                    days=MAX_CONSECUTIVE_WORK_DAYS
+                )
+                worked_in_window = sum(
+                    window_start + timedelta(days=offset) in worked_days
+                    for offset in range(CONSECUTIVE_WORK_WINDOW_DAYS)
+                )
+                if worked_in_window > MAX_CONSECUTIVE_WORK_DAYS:
+                    errors.append(
+                        "Màxim d'11 dies consecutius superat: "
+                        f"{worker_id} / {window_start.isoformat()} / "
+                        f"{window_end.isoformat()}"
+                    )
+                    break
+                window_start += timedelta(days=1)
 
     def _validate_compatibility_and_hours(
         self,

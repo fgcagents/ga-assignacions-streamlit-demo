@@ -24,7 +24,18 @@ REQUIRED_PATHS = (
     ROOT / "planificador_cp_sat" / "services" / "replanificacio.py",
     ROOT / "scripts" / "create_demo_database.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "model.py",
+    ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "domain.py",
+    ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "quality.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "sqlite_adapter.py",
+    ROOT
+    / "cp_sat_pilot"
+    / "src"
+    / "cp_sat_pilot"
+    / "constraints"
+    / "soft"
+    / "equity.py",
+    ROOT / "planificador_cp_sat" / "services" / "persistencia_planificacio.py",
+    ROOT / "planificador_cp_sat" / "services" / "publicacio_planificacio.py",
 )
 FORBIDDEN_DIRECTORIES = {"backups", "copies", ".venv", "__pycache__"}
 

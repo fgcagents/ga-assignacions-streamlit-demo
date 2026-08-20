@@ -41,7 +41,7 @@ class SoftComponents:
     zone_changes: cp_model.IntVar
     turn_changes: cp_model.IntVar
     annual_hours_range_minutes: cp_model.IntVar
-    annual_hours_range_scaled: cp_model.IntVar
+    adjusted_annual_rate_range: cp_model.IntVar
     annual_hours_equity_penalty: cp_model.IntVar
     accumulated_zone_rate_range: cp_model.IntVar
     accumulated_turn_rate_range: cp_model.IntVar

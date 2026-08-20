@@ -21,6 +21,34 @@ class Worker:
     historical_assignments: int = 0
     historical_zone_changes: int = 0
     historical_turn_changes: int = 0
+    annual_equity_target_minutes: int = 0
+    annual_equity_basis_days: int = 0
+    annual_absence_days: int = 0
+    compatible_opportunities: int = 0
+    compatible_opportunity_minutes: int = 0
+    annual_base_target_minutes: int = 0
+    annual_flexible_target_minutes: int = 0
+    annual_reliever_uplift_minutes: int = 0
+
+    def __post_init__(self) -> None:
+        if self.annual_equity_target_minutes <= 0:
+            object.__setattr__(
+                self,
+                "annual_equity_target_minutes",
+                self.max_annual_minutes,
+            )
+        if self.annual_base_target_minutes <= 0:
+            object.__setattr__(
+                self,
+                "annual_base_target_minutes",
+                self.annual_equity_target_minutes,
+            )
+        if self.annual_flexible_target_minutes <= 0:
+            object.__setattr__(
+                self,
+                "annual_flexible_target_minutes",
+                self.annual_equity_target_minutes,
+            )
 
     @property
     def remaining_annual_minutes(self) -> int:
@@ -175,6 +203,7 @@ class SolveResult:
     validation_errors: tuple[str, ...] = ()
     soft_metrics: SoftMetrics | None = None
     optimization_phases: tuple[OptimizationPhase, ...] = ()
+    equity_diagnostics: tuple[EquityWorkerDiagnostic, ...] = ()
 
     @property
     def feasible(self) -> bool:
@@ -214,6 +243,28 @@ class SoftMetrics:
     change_tiebreak_penalty: int
     normalized_total_changes: int
     opportunistic_equity_objective: int
+    adjusted_annual_rate_range_permille: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EquityWorkerDiagnostic:
+    worker_id: str
+    annual_minutes: int
+    adjusted_target_minutes: int
+    completion_rate_permille: int
+    absence_days: int
+    availability_basis_days: int
+    compatible_opportunities: int
+    compatible_opportunity_minutes: int
+    assigned_opportunities: int
+    comparable: bool
+    justification_codes: tuple[str, ...]
+    peer_gap_permille: int = 0
+    review_status: str = "no_comparable"
+    base_target_minutes: int = 0
+    flexible_target_minutes: int = 0
+    reliever_uplift_minutes: int = 0
+    maximum_minutes: int = 0
 
 
 def assignments_compatible(

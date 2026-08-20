@@ -15,6 +15,13 @@ from urllib.parse import quote
 from .domain import HistoricalAssignment, Need, PlanningProblem, Worker
 
 
+FULL_ANNUAL_MINUTES = 1605 * 60
+GROUP_T_CONTRACTUAL_RATE_PERMILLE = 750
+GROUP_T_CONTRACTUAL_REFERENCE_MINUTES = round(
+    FULL_ANNUAL_MINUTES * GROUP_T_CONTRACTUAL_RATE_PERMILLE / 1000
+)
+
+
 class SqliteInputError(ValueError):
     """Indica que l'esquema o les dades d'entrada no són planificables."""
 
@@ -82,6 +89,33 @@ def _parse_date(raw_value: object) -> date:
 def _split_values(raw_value: object) -> frozenset[str]:
     value = str(raw_value or "").replace("+", ",")
     return frozenset(part.strip() for part in value.split(",") if part.strip())
+
+
+def _prorated_target_minutes(
+    target_minutes: int,
+    basis_days: int,
+    absence_days: int,
+) -> int:
+    if basis_days <= 0:
+        return target_minutes
+    available_days = max(0, basis_days - absence_days)
+    return round(target_minutes * available_days / basis_days)
+
+
+def _annual_availability(
+    annual_calendar_dates: set[date],
+    base_rest_dates: set[date],
+    absence_dates: set[date],
+) -> tuple[int, int, set[date]]:
+    """Compta tota baixa anual potencial, encara que no hi hagi cobertura."""
+
+    basis_dates = annual_calendar_dates - base_rest_dates
+    counted_absences = absence_dates & basis_dates
+    return (
+        len(basis_dates),
+        len(counted_absences),
+        basis_dates - counted_absences,
+    )
 
 
 def _turn_options(raw_value: object) -> frozenset[str]:
@@ -167,7 +201,8 @@ def load_problem_from_sqlite(
     try:
         windows = _service_windows(connection)
         calendar = _calendar(connection)
-        coverage = _coverage_needs(connection)
+        all_coverage = _coverage_needs(connection)
+        coverage = all_coverage
         if start_date:
             coverage = [item for item in coverage if item.date >= start_date]
         if end_date:
@@ -178,11 +213,19 @@ def load_problem_from_sqlite(
             )
 
         rest_dates: dict[str, set[date]] = {}
+        base_rest_dates: dict[str, set[date]] = {}
+        absence_dates: dict[str, set[date]] = {}
         for row in connection.execute(
-            'SELECT "treballador_id", "data" FROM "descansos_dies"'
+            'SELECT "treballador_id", "data", "origen" FROM "descansos_dies"'
         ):
             worker_id = str(row["treballador_id"])
-            rest_dates.setdefault(worker_id, set()).add(_parse_date(row["data"]))
+            rest_day = _parse_date(row["data"])
+            rest_dates.setdefault(worker_id, set()).add(rest_day)
+            origin = str(row["origen"] or "").casefold()
+            if origin == "base":
+                base_rest_dates.setdefault(worker_id, set()).add(rest_day)
+            elif origin == "baixa":
+                absence_dates.setdefault(worker_id, set()).add(rest_day)
 
         worker_rows = list(connection.execute('SELECT * FROM "treballadors"'))
         worker_ids = {str(row["id"]) for row in worker_rows}
@@ -239,6 +282,98 @@ def load_problem_from_sqlite(
                 )
             )
 
+        planning_years = {
+            item.date.year for item in coverage
+        } or {
+            day.year for day in (start_date, end_date) if day is not None
+        }
+        annual_coverage = tuple(
+            item for item in all_coverage if item.date.year in planning_years
+        )
+        annual_coverage_dates = {item.date for item in annual_coverage}
+        annual_calendar_dates = {
+            day for day in calendar if day.year in planning_years
+        } or annual_coverage_dates
+
+        def opportunity_minutes(item: _CoverageNeed) -> int:
+            day_code = calendar.get(item.date)
+            window = next(
+                (
+                    candidate
+                    for candidate in windows.get(item.service_id, ())
+                    if day_code in candidate.day_codes
+                ),
+                None,
+            )
+            if window is None:
+                return 0
+            start = datetime.combine(item.date, window.start)
+            end = datetime.combine(item.date, window.end)
+            if window.end < window.start:
+                end += timedelta(days=1)
+            return int((end - start).total_seconds() // 60)
+
+        availability_profiles: dict[str, tuple[int, int]] = {}
+        available_dates_by_worker: dict[str, set[date]] = {}
+        for row in worker_rows:
+            worker_id = str(row["id"])
+            basis_days, absence_days, available_dates = _annual_availability(
+                annual_calendar_dates,
+                base_rest_dates.get(worker_id, set()),
+                absence_dates.get(worker_id, set()),
+            )
+            availability_profiles[worker_id] = (
+                basis_days,
+                absence_days,
+            )
+            available_dates_by_worker[worker_id] = available_dates
+
+        def equity_profile(
+            row: sqlite3.Row,
+        ) -> tuple[int, int, int, int, int, int, int, int]:
+            worker_id = str(row["id"])
+            group = str(row["grup"] or "")
+            basis_days, absence_days = availability_profiles[worker_id]
+            available_dates = available_dates_by_worker[worker_id]
+            if group == "T":
+                # El 75 % de la jornada anual és la referència contractual
+                # comuna del grup T. No és un mínim dur ni creix segons
+                # les baixes del grup A; només es prorrateja per les baixes
+                # pròpies per poder comparar disponibilitats diferents.
+                base_target = GROUP_T_CONTRACTUAL_REFERENCE_MINUTES
+                flexible_target = base_target
+                uplift = 0
+                target = _prorated_target_minutes(
+                    base_target,
+                    basis_days,
+                    absence_days,
+                )
+            else:
+                base_target = FULL_ANNUAL_MINUTES
+                flexible_target = FULL_ANNUAL_MINUTES
+                uplift = 0
+                target = FULL_ANNUAL_MINUTES
+            skills = _split_values(row["habilitacions"])
+            compatible_items = tuple(
+                item
+                for item in annual_coverage
+                if item.date in available_dates
+                and item.skills.intersection(skills)
+            )
+            return (
+                target,
+                basis_days,
+                absence_days,
+                len(compatible_items),
+                sum(opportunity_minutes(item) for item in compatible_items),
+                base_target,
+                flexible_target,
+                uplift,
+            )
+
+        equity_profiles = {
+            str(row["id"]): equity_profile(row) for row in worker_rows
+        }
         workers = tuple(
             Worker(
                 id=str(row["id"]),
@@ -250,7 +385,7 @@ def load_problem_from_sqlite(
                     annual_minutes.get(str(row["id"]), 0)
                     - removed_minutes.get(str(row["id"]), 0),
                 ),
-                max_annual_minutes=1605 * 60,
+                max_annual_minutes=FULL_ANNUAL_MINUTES,
                 home_zone=str(row["zona"] or ""),
                 turn_options=_turn_options(row["rotacio"]),
                 historical_assignments=historical_counts.get(str(row["id"]), 0),
@@ -259,6 +394,22 @@ def load_problem_from_sqlite(
                 ),
                 historical_turn_changes=historical_turn_changes.get(
                     str(row["id"]), 0
+                ),
+                annual_equity_target_minutes=equity_profiles[str(row["id"])][0],
+                annual_equity_basis_days=equity_profiles[str(row["id"])][1],
+                annual_absence_days=equity_profiles[str(row["id"])][2],
+                compatible_opportunities=equity_profiles[str(row["id"])][3],
+                compatible_opportunity_minutes=(
+                    equity_profiles[str(row["id"])][4]
+                ),
+                annual_base_target_minutes=(
+                    equity_profiles[str(row["id"])][5]
+                ),
+                annual_flexible_target_minutes=(
+                    equity_profiles[str(row["id"])][6]
+                ),
+                annual_reliever_uplift_minutes=(
+                    equity_profiles[str(row["id"])][7]
                 ),
             )
             for row in worker_rows

@@ -11,7 +11,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from cp_sat_pilot import Assignment, CpSatPlanner, PlanningProblem, SolverConfig
+from cp_sat_pilot import (
+    Assignment,
+    CpSatPlanner,
+    PlanningProblem,
+    SolverConfig,
+    assess_equity_execution,
+)
 
 from planificador_cp_sat.domain import (
     PlanningExecutionRequest,
@@ -80,6 +86,8 @@ class StoredPlanningExecution:
     reverted_at: str | None
     backup_path: str | None
     final_snapshot_hash: str | None
+    equity_override: dict[str, Any] | None
+    equity_override_at: str | None
 
 
 def _json_dumps(value: object) -> str:
@@ -241,6 +249,24 @@ def planning_problem_hash(problem: PlanningProblem) -> str:
                 "historical_assignments": worker.historical_assignments,
                 "historical_zone_changes": worker.historical_zone_changes,
                 "historical_turn_changes": worker.historical_turn_changes,
+                "annual_equity_target_minutes": (
+                    worker.annual_equity_target_minutes
+                ),
+                "annual_base_target_minutes": (
+                    worker.annual_base_target_minutes
+                ),
+                "annual_flexible_target_minutes": (
+                    worker.annual_flexible_target_minutes
+                ),
+                "annual_reliever_uplift_minutes": (
+                    worker.annual_reliever_uplift_minutes
+                ),
+                "annual_equity_basis_days": worker.annual_equity_basis_days,
+                "annual_absence_days": worker.annual_absence_days,
+                "compatible_opportunities": worker.compatible_opportunities,
+                "compatible_opportunity_minutes": (
+                    worker.compatible_opportunity_minutes
+                ),
             }
             for worker in sorted(problem.workers, key=lambda item: item.id)
         ],
@@ -306,6 +332,7 @@ def _configuration_payload(proposal: PlanningProposal) -> dict:
 
 
 def _metrics_payload(proposal: PlanningProposal) -> dict:
+    equity_assessment = assess_equity_execution(proposal.result)
     return {
         "soft_metrics": (
             asdict(proposal.result.soft_metrics)
@@ -313,6 +340,10 @@ def _metrics_payload(proposal: PlanningProposal) -> dict:
             else None
         ),
         "phases": [asdict(item) for item in proposal.result.optimization_phases],
+        "equity_assessment": asdict(equity_assessment),
+        "equity_diagnostics": [
+            asdict(item) for item in proposal.result.equity_diagnostics
+        ],
         "wall_time_seconds": proposal.result.wall_time_seconds,
         "candidates": [asdict(item) for item in proposal.selection.candidates],
         "uncovered": [
@@ -520,6 +551,12 @@ def _stored_execution(
         reverted_at=header["reverted_at"],
         backup_path=header["backup_path"],
         final_snapshot_hash=header["snapshot_final_hash"],
+        equity_override=(
+            json.loads(header["equity_override_json"])
+            if header["equity_override_json"]
+            else None
+        ),
+        equity_override_at=header["equity_override_at"],
     )
 
 

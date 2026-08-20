@@ -98,8 +98,25 @@ def summarize_stability_run(
     phases = {phase.name: phase for phase in result.optimization_phases}
     coverage_phase = phases.get("cobertura")
     stability_phase = phases.get("estabilitat_pla")
-    operational_phase = phases.get("preferencies_operatives")
-    equity_phase = phases.get("equitat_oportunista")
+    operational_phase = None
+    annual_phase = phases.get("equitat_hores_contractual")
+    change_phase = phases.get("desempat_canvis")
+    tiebreak_phase = change_phase
+    legacy_equity_phase = phases.get("equitat_oportunista")
+    if not any((annual_phase, change_phase, tiebreak_phase)):
+        annual_phase = change_phase = tiebreak_phase = legacy_equity_phase
+    equity_phases = tuple(
+        phase for phase in (annual_phase, change_phase, tiebreak_phase) if phase
+    )
+    equity_status = (
+        "OPTIMAL"
+        if equity_phases and all(phase.status == "OPTIMAL" for phase in equity_phases)
+        else "FEASIBLE"
+        if equity_phases and all(
+            phase.status in {"FEASIBLE", "OPTIMAL"} for phase in equity_phases
+        )
+        else "NO_EXECUTADA"
+    )
     metrics = result.soft_metrics
 
     return StabilityRun(
@@ -117,12 +134,12 @@ def summarize_stability_run(
         operational_phase_status=(
             operational_phase.status if operational_phase else "NO_EXECUTADA"
         ),
-        annual_phase_status=equity_phase.status if equity_phase else "NO_EXECUTADA",
-        annual_phase_gap=equity_phase.relative_gap if equity_phase else None,
-        change_phase_status=equity_phase.status if equity_phase else "NO_EXECUTADA",
-        change_phase_gap=equity_phase.relative_gap if equity_phase else None,
+        annual_phase_status=annual_phase.status if annual_phase else "NO_EXECUTADA",
+        annual_phase_gap=annual_phase.relative_gap if annual_phase else None,
+        change_phase_status=change_phase.status if change_phase else "NO_EXECUTADA",
+        change_phase_gap=change_phase.relative_gap if change_phase else None,
         tiebreak_phase_status=(
-            equity_phase.status if equity_phase else "NO_EXECUTADA"
+            tiebreak_phase.status if tiebreak_phase else "NO_EXECUTADA"
         ),
         annual_hours_range=(
             metrics.annual_hours_range_minutes / 60 if metrics else None
@@ -157,9 +174,17 @@ def summarize_stability_run(
             stability_phase.status if stability_phase else "NO_EXECUTADA"
         ),
         equity_phase_status=(
-            equity_phase.status if equity_phase else "NO_EXECUTADA"
+            equity_status
         ),
-        equity_phase_gap=equity_phase.relative_gap if equity_phase else None,
+        equity_phase_gap=(
+            max(
+                phase.relative_gap
+                for phase in equity_phases
+                if phase.relative_gap is not None
+            )
+            if any(phase.relative_gap is not None for phase in equity_phases)
+            else None
+        ),
         plan_alterations=metrics.plan_alterations if metrics else None,
         opportunistic_equity_objective=(
             metrics.opportunistic_equity_objective if metrics else None

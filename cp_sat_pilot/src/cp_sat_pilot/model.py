@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from statistics import median
 from typing import Iterable
 
 from ortools.sat.python import cp_model
@@ -15,6 +16,7 @@ from .constraints import (
 from .constraints.soft.operational import is_turn_change, is_zone_change
 from .domain import (
     Assignment,
+    EquityWorkerDiagnostic,
     Need,
     OptimizationPhase,
     PlanningProblem,
@@ -31,6 +33,7 @@ STATUS_NAMES = {
     cp_model.INFEASIBLE: "INFEASIBLE",
     cp_model.OPTIMAL: "OPTIMAL",
 }
+INFORMATIONAL_EQUITY_GAP_PERMILLE = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,55 +123,41 @@ class CpSatPlanner:
             if stability_solver is not None:
                 final_solver = stability_solver
                 soft_solution_available = True
-            stability_target = round(
-                stability_phase.objective_value or 0
-            )
+            stability_target = round(stability_phase.objective_value or 0)
             model.add(soft.plan_alterations == stability_target)
-            if stability_solver is not None:
-                self._add_assignment_hints(
-                    model, core, stability_solver
-                )
+            self._add_assignment_hints(model, core, final_solver)
 
             model.clear_objective()
-            model.minimize(soft.operational_penalty)
-            operational_solver, operational_phase = self._solve_phase(
-                model,
-                config,
-                "preferencies_operatives",
-                maximize=False,
-            )
-            phases.append(operational_phase)
-        else:
-            operational_solver = None
-            operational_phase = None
-
-        if (
-            operational_solver is not None
-            and operational_phase is not None
-            and operational_phase.status in {"FEASIBLE", "OPTIMAL"}
-        ):
-            final_solver = operational_solver
-            soft_solution_available = True
-            operational_target = round(
-                operational_phase.objective_value or 0
-            )
-            model.add(soft.operational_penalty == operational_target)
-            self._add_assignment_hints(
-                model, core, operational_solver
-            )
-
-            model.clear_objective()
-            model.minimize(soft.opportunistic_equity_objective)
+            model.minimize(soft.annual_fairness_objective)
             equity_solver, equity_phase = self._solve_phase(
                 model,
                 config,
-                "equitat_oportunista",
+                "equitat_hores_contractual",
                 maximize=False,
                 time_limit_seconds=config.equity_time_seconds,
             )
             phases.append(equity_phase)
             if equity_phase.status in {"FEASIBLE", "OPTIMAL"}:
                 final_solver = equity_solver
+                soft_solution_available = True
+                model.add(
+                    soft.annual_fairness_objective
+                    == round(equity_phase.objective_value or 0)
+                )
+                self._add_assignment_hints(model, core, equity_solver)
+
+                model.clear_objective()
+                model.minimize(soft.change_tiebreak_penalty)
+                changes_solver, changes_phase = self._solve_phase(
+                    model,
+                    config,
+                    "desempat_canvis",
+                    maximize=False,
+                    time_limit_seconds=config.equity_time_seconds,
+                )
+                phases.append(changes_phase)
+                if changes_phase.status in {"FEASIBLE", "OPTIMAL"}:
+                    final_solver = changes_solver
 
         assignments = self._extract_assignments(
             final_solver, core.assignment_vars
@@ -179,6 +168,7 @@ class CpSatPlanner:
             if soft_solution_available
             else None
         )
+        equity_diagnostics = self._build_equity_diagnostics(assignments)
         status = (
             "OPTIMAL"
             if all(phase.status == "OPTIMAL" for phase in phases)
@@ -206,6 +196,7 @@ class CpSatPlanner:
             validation_errors=errors,
             soft_metrics=soft_metrics,
             optimization_phases=tuple(phases),
+            equity_diagnostics=equity_diagnostics,
         )
 
     @staticmethod
@@ -413,7 +404,118 @@ class CpSatPlanner:
             opportunistic_equity_objective=solver.value(
                 soft.opportunistic_equity_objective
             ),
+            adjusted_annual_rate_range_permille=solver.value(
+                soft.adjusted_annual_rate_range
+            ),
         )
+
+    def _build_equity_diagnostics(
+        self,
+        assignments: Iterable[Assignment],
+    ) -> tuple[EquityWorkerDiagnostic, ...]:
+        """Calcula informació posterior; no altera ni bloqueja el solver."""
+
+        assigned_minutes: dict[str, int] = {}
+        assigned_counts: dict[str, int] = {}
+        for assignment in assignments:
+            assigned_minutes[assignment.worker_id] = (
+                assigned_minutes.get(assignment.worker_id, 0)
+                + assignment.duration_minutes
+            )
+            assigned_counts[assignment.worker_id] = (
+                assigned_counts.get(assignment.worker_id, 0) + 1
+            )
+
+        workers = tuple(
+            worker for worker in self.problem.workers if worker.group == "T"
+        )
+        comparable_rates = []
+        for worker in workers:
+            comparable = (
+                worker.annual_equity_target_minutes > 0
+                and worker.compatible_opportunities > 0
+            )
+            if comparable:
+                annual_total = worker.annual_minutes + assigned_minutes.get(
+                    worker.id, 0
+                )
+                comparable_rates.append(
+                    annual_total
+                    * 1000
+                    // max(1, worker.annual_equity_target_minutes)
+                )
+
+        reference_rate = median(comparable_rates) if comparable_rates else 0
+        diagnostics: list[EquityWorkerDiagnostic] = []
+        for worker in workers:
+            annual_total = worker.annual_minutes + assigned_minutes.get(
+                worker.id, 0
+            )
+            completion_rate = (
+                annual_total
+                * 1000
+                // max(1, worker.annual_equity_target_minutes)
+            )
+            comparable = (
+                worker.annual_equity_target_minutes > 0
+                and worker.compatible_opportunities > 0
+            )
+            codes = [
+                "equitat_exclusiva_grup_T",
+                "referencia_contractual_75",
+            ]
+            if worker.annual_absence_days:
+                codes.append("objectiu_ajustat_per_baixa")
+            if worker.compatible_opportunities == 0:
+                codes.append("sense_oportunitats_compatibles")
+            peer_gap = round(completion_rate - reference_rate) if comparable else 0
+            absolute_gap = abs(peer_gap)
+            if not comparable:
+                review_status = "no_comparable"
+            elif absolute_gap <= INFORMATIONAL_EQUITY_GAP_PERMILLE:
+                review_status = "dins_marge"
+            else:
+                review_status = "alerta_informativa"
+            if comparable:
+                if peer_gap < -INFORMATIONAL_EQUITY_GAP_PERMILLE:
+                    codes.append("desviacio_negativa_residual")
+                elif peer_gap > INFORMATIONAL_EQUITY_GAP_PERMILLE:
+                    codes.append("desviacio_positiva_residual")
+                else:
+                    codes.append("dins_marge_informatiu")
+            diagnostics.append(
+                EquityWorkerDiagnostic(
+                    worker_id=worker.id,
+                    annual_minutes=annual_total,
+                    adjusted_target_minutes=worker.annual_equity_target_minutes,
+                    completion_rate_permille=completion_rate,
+                    absence_days=worker.annual_absence_days,
+                    availability_basis_days=worker.annual_equity_basis_days,
+                    compatible_opportunities=worker.compatible_opportunities,
+                    compatible_opportunity_minutes=(
+                        worker.compatible_opportunity_minutes
+                    ),
+                    assigned_opportunities=(
+                        worker.historical_assignments
+                        + assigned_counts.get(worker.id, 0)
+                    ),
+                    comparable=comparable,
+                    justification_codes=tuple(codes),
+                    peer_gap_permille=peer_gap,
+                    review_status=review_status,
+                    base_target_minutes=(
+                        worker.annual_base_target_minutes
+                    ),
+                    flexible_target_minutes=(
+                        worker.annual_flexible_target_minutes
+                    ),
+                    reliever_uplift_minutes=(
+                        worker.annual_reliever_uplift_minutes
+                    ),
+                    maximum_minutes=worker.max_annual_minutes,
+                )
+            )
+        return tuple(diagnostics)
 
     def _empty_result(
         self,

@@ -2,6 +2,7 @@
 
 from .domain import (
     Assignment,
+    EquityWorkerDiagnostic,
     HistoricalAssignment,
     Need,
     OptimizationPhase,
@@ -11,6 +12,7 @@ from .domain import (
     Worker,
 )
 from .model import CpSatPlanner, SoftObjectiveWeights, SolverConfig
+from .quality import EquityExecutionAssessment, assess_equity_execution
 from .multistart import (
     MultiStartCandidate,
     MultiStartSelection,
@@ -32,7 +34,9 @@ from .sqlite_adapter import SqliteInputError, load_problem_from_sqlite
 
 __all__ = [
     "Assignment",
+    "EquityWorkerDiagnostic",
     "CpSatPlanner",
+    "EquityExecutionAssessment",
     "HistoricalAssignment",
     "MultiStartCandidate",
     "MultiStartSelection",
@@ -50,6 +54,7 @@ __all__ = [
     "StabilityRun",
     "Worker",
     "aggregate_stability_runs",
+    "assess_equity_execution",
     "apply_scenario",
     "assignment_fingerprint",
     "build_scaled_problem",

@@ -1,8 +1,14 @@
 # Protocol de promoció de canvis
 
-> **Promoció completada:** el 09/08/2026 s’han sincronitzat l’aplicació
+> **Promoció completada:** el 20/08/2026 s’han sincronitzat l’aplicació
 > multipàgina, el nucli incremental i els modes de desplegament amb aquesta
-> còpia de demostració.
+> còpia de demostració. La promoció conserva el límit dur d'11 dies
+> consecutius i recupera el motor simple: cobertura, estabilitat opcional,
+> equitat d'hores sobre la referència contractual del 75% i desempat pel total
+> de canvis de zona i torn. La referència només s'ajusta per les absències
+> pròpies. S'han retirat de l'execució les fases addicionals, l'índex compost,
+> els reintents dirigits i la porta d'aprovació; els diagnòstics continuen
+> disponibles com a informació no bloquejant.
 
 ## Carpetes
 

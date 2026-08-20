@@ -1076,6 +1076,18 @@ def _execution_presentation(
         "comparison": rows,
         "worker_impact": sorted(impact.values(), key=lambda item: item["Treballador"]),
         "uncovered_details": execution.metrics.get("uncovered", []),
+        "equity_assessment": execution.metrics.get(
+            "equity_assessment",
+            {
+                "status": "no_avaluada",
+                "publishable": False,
+                "reasons": ["avaluacio_equitat_absent"],
+            },
+        ),
+        "equity_diagnostics": execution.metrics.get(
+            "equity_diagnostics", []
+        ),
+        "equity_override": getattr(execution, "equity_override", None),
     }
 
 
@@ -1124,6 +1136,9 @@ def _render_incremental_actions(
     execution: StoredPlanningExecution,
 ) -> None:
     rollout = load_planning_rollout_config()
+    assessment = getattr(execution, "metrics", {}).get(
+        "equity_assessment", {}
+    )
     if execution.state == "esborrany":
         confirmed = st.checkbox(
             "Confirmo que he revisat els canvis i els descoberts",
@@ -1258,6 +1273,89 @@ def _render_incremental_execution(
         f"{shadow['persistent_changes']} canvis · "
         f"{float(shadow['wall_time_seconds'] or 0):.2f} s"
     )
+    equity_assessment = view["equity_assessment"]
+    if equity_assessment.get("publishable", False) and not equity_assessment.get(
+        "review_worker_ids", ()
+    ):
+        st.success(
+            "Equitat contractual avaluada. La referència del 75% s'ha usat "
+            "com a criteri secundari després de maximitzar la cobertura."
+        )
+    elif equity_assessment.get("publishable", False):
+        workers = ", ".join(equity_assessment.get("review_worker_ids", ()))
+        affected = f" Treballadors destacats: {workers}." if workers else ""
+        st.warning(
+            "El diagnòstic posterior mostra diferències que convé revisar. "
+            "Són informatives i no bloquegen la validació ni la publicació."
+            + affected
+        )
+    else:
+        reasons = ", ".join(
+            equity_assessment.get("reasons", ["avaluació no disponible"])
+        )
+        st.error(
+            "La proposta no és publicable per errors de factibilitat o "
+            f"validació ({reasons})."
+        )
+    diagnostics = view["equity_diagnostics"]
+    if diagnostics:
+        comparable = [item for item in diagnostics if item.get("comparable")]
+        with st.expander(
+            "Diagnòstic justificable per treballador",
+            icon=":material/balance:",
+        ):
+            st.caption(
+                "L'equitat compara exclusivament el grup T. L'objectiu base "
+                "és el 75% de 1.605 hores i només s'ajusta proporcionalment "
+                "per les absències pròpies de cada treballador."
+            )
+            st.dataframe(
+                [
+                    {
+                        "Treballador": item.get("worker_id"),
+                        "% objectiu ajustat": round(
+                            float(item.get("completion_rate_permille", 0)) / 10,
+                            1,
+                        ),
+                        "Objectiu base T (h)": round(
+                            float(item.get("base_target_minutes", 0)) / 60,
+                            1,
+                        ),
+                        "Sostre (h)": round(
+                            float(item.get("maximum_minutes", 0)) / 60,
+                            1,
+                        ),
+                        "Diferència vs. grup (pp)": round(
+                            float(item.get("peer_gap_permille", 0)) / 10,
+                            1,
+                        ),
+                        "Hores acumulades": round(
+                            float(item.get("annual_minutes", 0)) / 60, 1
+                        ),
+                        "Objectiu ajustat (h)": round(
+                            float(item.get("adjusted_target_minutes", 0)) / 60,
+                            1,
+                        ),
+                        "Dies de baixa": item.get("absence_days", 0),
+                        "Capacitat compatible (h)": round(
+                            float(item.get("compatible_opportunity_minutes", 0))
+                            / 60,
+                            1,
+                        ),
+                        "Revisió": item.get("review_status"),
+                        "Justificació": ", ".join(
+                            item.get("justification_codes", [])
+                        ),
+                    }
+                    for item in diagnostics
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                f"{len(comparable)} de {len(diagnostics)} treballadors formen "
+                "part de la comparació central."
+            )
     if view["stale_message"]:
         st.error(view["stale_message"], icon=":material/update_disabled:")
     elif execution.state == "publicada":
@@ -1516,11 +1614,15 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 )
             with equity_column:
                 equity_time = st.number_input(
-                    "Temps per a equitat (s)",
+                    "Temps base d'equitat (s)",
                     5,
                     60,
                     15,
                     step=5,
+                    help=(
+                        "Temps per a l'equitat d'hores i per al desempat "
+                        "simple de canvis, sempre després de la cobertura."
+                    ),
                 )
             with workers_column:
                 num_workers = st.number_input(

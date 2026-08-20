@@ -339,6 +339,44 @@ def analyze_functional_result(
             ),
             "canvis_zona": metrics.zone_changes if metrics else None,
             "canvis_torn": metrics.turn_changes if metrics else None,
+            "rang_percentual_objectiu_ajustat": (
+                metrics.adjusted_annual_rate_range_permille / 10
+                if metrics
+                else None
+            ),
+            "diagnostics_treballador": [
+                {
+                    "treballador": item.worker_id,
+                    "percentatge_objectiu_ajustat": (
+                        item.completion_rate_permille / 10
+                    ),
+                    "objectiu_base_hores": round(
+                        item.base_target_minutes / 60, 2
+                    ),
+                    "objectiu_flexible_hores": round(
+                        item.flexible_target_minutes / 60, 2
+                    ),
+                    "increment_baixes_A_hores": round(
+                        item.reliever_uplift_minutes / 60, 2
+                    ),
+                    "objectiu_ajustat_hores": round(
+                        item.adjusted_target_minutes / 60, 2
+                    ),
+                    "sostre_hores": round(item.maximum_minutes / 60, 2),
+                    "dies_baixa": item.absence_days,
+                    "oportunitats_compatibles": item.compatible_opportunities,
+                    "hores_compatibles": round(
+                        item.compatible_opportunity_minutes / 60, 2
+                    ),
+                    "comparable": item.comparable,
+                    "diferencia_mediana_punts": round(
+                        item.peer_gap_permille / 10, 1
+                    ),
+                    "estat_revisio": item.review_status,
+                    "justificacions": list(item.justification_codes),
+                }
+                for item in result.equity_diagnostics
+            ],
         },
         "carrega": {
             "treballadors_t": len(workers_t),

@@ -301,6 +301,15 @@ def prepare_planning_problem(
         request,
     )
     required_assignments = _load_required_assignments(database_path, request)
+    required_by_need = dict(required_assignments)
+    for need_id, worker_id in request.adjustments.preferred_assignments:
+        existing = required_by_need.get(need_id)
+        if existing is not None and existing != worker_id:
+            raise PlanningProblemPreparationError(
+                f"La necessitat {need_id} té dues preassignacions incompatibles"
+            )
+        required_by_need[need_id] = worker_id
+    required_assignments = tuple(sorted(required_by_need.items()))
     required_need_ids = frozenset(
         need_id for need_id, _worker_id in required_assignments
     )
@@ -378,7 +387,7 @@ def prepare_planning_problem(
         reference_assignments=references,
         locked_need_ids=classification.hard_locked_need_ids,
         affected_need_ids=classification.affected_need_ids,
-        preferred_assignments=request.adjustments.preferred_assignments,
+        preferred_assignments=(),
         required_assignments=required_assignments,
         recipient_worker_ids=(
             frozenset()

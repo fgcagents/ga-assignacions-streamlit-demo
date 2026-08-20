@@ -400,7 +400,7 @@ def _prepare_incident_problem_legacy(
         reference_assignments=tuple(references),
         locked_need_ids=frozenset(locked_need_ids),
         affected_need_ids=frozenset(affected_need_ids),
-        preferred_assignments=preferred_assignments,
+        required_assignments=preferred_assignments,
     )
     return IncidentPlanningContext(
         incidence_id=incidence_id,
@@ -729,11 +729,11 @@ def generate_incident_draft(
 ) -> IncidentCpSatDraft:
     context = prepare_incident_problem(database_path, incidence_id)
     solver_config = config or SolverConfig(
-            max_time_seconds=15,
-            equity_time_seconds=15,
-            num_workers=8,
-            random_seed=0,
-        )
+        max_time_seconds=15,
+        equity_time_seconds=15,
+        num_workers=8,
+        random_seed=0,
+    )
     proposal = generate_planning_proposal(
         context.prepared,
         config=solver_config,

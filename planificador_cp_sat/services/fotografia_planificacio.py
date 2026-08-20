@@ -28,7 +28,9 @@ from cp_sat_pilot.sqlite_adapter import (  # noqa: E402
 )
 
 
-BOUNDARY_DAYS = 2
+# Una ratxa de 12 dies pot travessar el límit de l'abast amb només un dia
+# dins del període. Cal conservar onze dies a cada costat per validar-la.
+BOUNDARY_DAYS = 11
 ACTIVE_STATES = frozenset({"publicada", "bloquejada"})
 
 

@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EXECUTION_STATES = (
     "esborrany",
     "validada",
@@ -216,6 +216,8 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
             resultat_hash TEXT NOT NULL,
             backup_path TEXT,
             snapshot_final_hash TEXT,
+            equity_override_json TEXT,
+            equity_override_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             validated_at TEXT,
             published_at TEXT,
@@ -224,6 +226,18 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    execution_columns = {
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info(execucions_planificacio_cp_sat)"
+        )
+    }
+    for column in ("equity_override_json", "equity_override_at"):
+        if column not in execution_columns:
+            connection.execute(
+                f"ALTER TABLE execucions_planificacio_cp_sat "
+                f"ADD COLUMN {column} TEXT"
+            )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS canvis_planificacio_cp_sat (

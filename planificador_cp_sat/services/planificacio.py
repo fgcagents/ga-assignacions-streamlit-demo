@@ -184,6 +184,20 @@ def _problem_snapshot_hash(problem: PlanningProblem) -> str:
                 "assignments": worker.historical_assignments,
                 "zone_changes": worker.historical_zone_changes,
                 "turn_changes": worker.historical_turn_changes,
+                "equity_target": worker.annual_equity_target_minutes,
+                "equity_base_target": worker.annual_base_target_minutes,
+                "equity_flexible_target": (
+                    worker.annual_flexible_target_minutes
+                ),
+                "equity_reliever_uplift": (
+                    worker.annual_reliever_uplift_minutes
+                ),
+                "equity_basis_days": worker.annual_equity_basis_days,
+                "absence_days": worker.annual_absence_days,
+                "compatible_opportunities": worker.compatible_opportunities,
+                "compatible_opportunity_minutes": (
+                    worker.compatible_opportunity_minutes
+                ),
             }
             for worker in sorted(problem.workers, key=lambda item: item.id)
         ],
@@ -703,6 +717,9 @@ def generate_initial_coverage(
         "metriques_toves": (
             asdict(result.soft_metrics) if result.soft_metrics else None
         ),
+        "diagnostics_equitat": [
+            asdict(item) for item in result.equity_diagnostics
+        ],
         "validacio_funcional": functional_validation,
         "candidats_multillavor": [
             asdict(candidate) for candidate in selection.candidates
