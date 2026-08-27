@@ -20,8 +20,10 @@ class OperationalComponents:
     load_vars: dict[str, cp_model.IntVar]
     zone_change_vars: dict[str, cp_model.IntVar]
     turn_change_vars: dict[str, cp_model.IntVar]
+    preference_exception_vars: dict[str, cp_model.IntVar]
     zone_assignment_vars: list[cp_model.IntVar]
     turn_assignment_vars: list[cp_model.IntVar]
+    preference_exception_assignment_vars: list[cp_model.IntVar]
     consecutive_excess_vars: list[cp_model.IntVar]
     preferred_violation_vars: list[cp_model.IntVar]
     plan_alterations: cp_model.IntVar
@@ -30,6 +32,7 @@ class OperationalComponents:
     friday_violation: cp_model.IntVar
     zone_changes: cp_model.IntVar
     turn_changes: cp_model.IntVar
+    preference_exceptions: cp_model.IntVar
     operational_penalty: cp_model.IntVar
 
 
@@ -146,8 +149,10 @@ def build_operational_components(
     load_vars: dict[str, cp_model.IntVar] = {}
     zone_change_vars: dict[str, cp_model.IntVar] = {}
     turn_change_vars: dict[str, cp_model.IntVar] = {}
+    preference_exception_vars: dict[str, cp_model.IntVar] = {}
     zone_assignment_vars: list[cp_model.IntVar] = []
     turn_assignment_vars: list[cp_model.IntVar] = []
+    preference_exception_assignment_vars: list[cp_model.IntVar] = []
 
     for worker in workers:
         worker_need_ids = tuple(
@@ -186,6 +191,20 @@ def build_operational_components(
             f"turn_changes__{worker.id}",
         )
         turn_assignment_vars.extend(worker_turn_vars)
+
+        worker_exception_vars = [
+            core.assignment_vars[(worker.id, need_id)]
+            for need_id in worker_need_ids
+            if is_zone_change(worker, needs_by_id[need_id])
+            or is_turn_change(worker, needs_by_id[need_id])
+        ]
+        preference_exception_vars[worker.id] = aggregate_count(
+            model,
+            worker_exception_vars,
+            max_load,
+            f"preference_exceptions__{worker.id}",
+        )
+        preference_exception_assignment_vars.extend(worker_exception_vars)
 
     consecutive_excess_vars = _build_consecutive_day_penalties(
         problem, core, workers, history_by_worker
@@ -242,6 +261,12 @@ def build_operational_components(
         len(turn_assignment_vars),
         "turn_changes_total",
     )
+    preference_exceptions = aggregate_count(
+        model,
+        preference_exception_assignment_vars,
+        len(preference_exception_assignment_vars),
+        "preference_exceptions_total",
+    )
 
     stable_references = tuple(
         assignment
@@ -287,8 +312,12 @@ def build_operational_components(
         load_vars=load_vars,
         zone_change_vars=zone_change_vars,
         turn_change_vars=turn_change_vars,
+        preference_exception_vars=preference_exception_vars,
         zone_assignment_vars=zone_assignment_vars,
         turn_assignment_vars=turn_assignment_vars,
+        preference_exception_assignment_vars=(
+            preference_exception_assignment_vars
+        ),
         consecutive_excess_vars=consecutive_excess_vars,
         preferred_violation_vars=preferred_violation_vars,
         plan_alterations=plan_alterations,
@@ -297,5 +326,6 @@ def build_operational_components(
         friday_violation=friday_violation,
         zone_changes=zone_changes,
         turn_changes=turn_changes,
+        preference_exceptions=preference_exceptions,
         operational_penalty=operational_penalty,
     )

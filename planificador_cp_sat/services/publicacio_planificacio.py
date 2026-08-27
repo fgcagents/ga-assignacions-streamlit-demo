@@ -27,6 +27,7 @@ from planificador_cp_sat.services.persistencia_planificacio import (
 from planificador_cp_sat.services.preparacio_planificacio import (
     prepare_planning_problem,
 )
+from planificador_cp_sat.solver_engines import PUBLISHABLE_SOLVER_STATUSES
 from planificador_cp_sat.services.proposta_planificacio import (
     PlanningChangeKind,
 )
@@ -309,6 +310,11 @@ def apply_planning_changeset(
         if stored.state != "validada":
             raise PlanningExecutionPersistenceError(
                 "Només es pot publicar una proposta validada"
+            )
+        if stored.solver_status not in PUBLISHABLE_SOLVER_STATUSES:
+            raise PlanningExecutionPersistenceError(
+                "No es pot publicar la proposta: el solver no ha produït "
+                "una solució factible utilitzable"
             )
         try:
             prepared = prepare_planning_problem(database_path, stored.request)

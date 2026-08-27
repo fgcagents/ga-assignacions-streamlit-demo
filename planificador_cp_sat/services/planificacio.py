@@ -184,6 +184,8 @@ def _problem_snapshot_hash(problem: PlanningProblem) -> str:
                 "assignments": worker.historical_assignments,
                 "zone_changes": worker.historical_zone_changes,
                 "turn_changes": worker.historical_turn_changes,
+                "night_services": worker.historical_night_services,
+                "can_work_nights": worker.can_work_nights,
                 "equity_target": worker.annual_equity_target_minutes,
                 "equity_base_target": worker.annual_base_target_minutes,
                 "equity_flexible_target": (
@@ -210,6 +212,7 @@ def _problem_snapshot_hash(problem: PlanningProblem) -> str:
                 "skills": sorted(need.required_skills),
                 "zone": need.zone,
                 "turns": sorted(need.turn_options),
+                "is_night": need.is_night,
             }
             for need in sorted(problem.needs, key=lambda item: item.id)
         ],
@@ -221,6 +224,7 @@ def _problem_snapshot_hash(problem: PlanningProblem) -> str:
                 "minutes": item.duration_minutes,
                 "zone_change": item.zone_change,
                 "turn_change": item.turn_change,
+                "is_night": item.is_night,
             }
             for item in sorted(
                 problem.history,
@@ -601,8 +605,7 @@ def generate_initial_coverage(
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     solver_config = config or SolverConfig(
-        max_time_seconds=60,
-        equity_time_seconds=15,
+        max_time_seconds=120,
         num_workers=8,
         random_seed=0,
     )
@@ -720,6 +723,11 @@ def generate_initial_coverage(
         "diagnostics_equitat": [
             asdict(item) for item in result.equity_diagnostics
         ],
+        "resum_diagnostics_socials": (
+            asdict(result.social_diagnostic_summary)
+            if result.social_diagnostic_summary
+            else None
+        ),
         "validacio_funcional": functional_validation,
         "candidats_multillavor": [
             asdict(candidate) for candidate in selection.candidates
@@ -1038,12 +1046,12 @@ def _revalidate_draft_data(
     )
     if (
         coverage_phase is None
-        or coverage_phase["status"] != "OPTIMAL"
+        or coverage_phase["status"] not in {"FEASIBLE", "OPTIMAL"}
         or round(coverage_phase.get("objective_value") or 0)
         != len(assignments)
     ):
         raise ValueError(
-            "No consta una prova òptima de la cobertura màxima; "
+            "No consta una solució factible coherent amb la cobertura; "
             "cal recalcular la proposta."
         )
     return problem, assignments

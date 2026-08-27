@@ -6,10 +6,11 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from datetime import time
 from pathlib import Path
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 EXECUTION_STATES = (
     "esborrany",
     "validada",
@@ -28,6 +29,56 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone() is not None
+
+
+def _parse_service_time(raw_value: object) -> time:
+    value = str(raw_value or "").replace('"', "").strip()
+    if not value:
+        raise PlanningSchemaMigrationError("Hora de servei buida")
+    try:
+        hours, minutes = (int(part) for part in value.split(":")[:2])
+        return time(hours % 24, minutes)
+    except (TypeError, ValueError) as error:
+        raise PlanningSchemaMigrationError(
+            f"Hora de servei invàlida: {raw_value}"
+        ) from error
+
+
+def _is_night_service_window(start: object, end: object) -> bool:
+    start_time = _parse_service_time(start)
+    end_time = _parse_service_time(end)
+    return start_time > time(19, 0) and time.min < end_time <= time(6, 0)
+
+
+def _migrate_service_night_indicator(
+    connection: sqlite3.Connection,
+) -> None:
+    if not _table_exists(connection, "serveis_horaris"):
+        return
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(serveis_horaris)")
+    }
+    if "is_night" not in columns:
+        connection.execute(
+            "ALTER TABLE serveis_horaris "
+            "ADD COLUMN is_night INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (is_night IN (0, 1))"
+        )
+    for row in connection.execute('SELECT * FROM "serveis_horaris"'):
+        flags = [
+            _is_night_service_window(
+                row[f"Inici S{index}"], row[f"Final S{index}"]
+            )
+            for index in range(1, 5)
+            if row[f"Servei {index}"]
+            and row[f"Inici S{index}"]
+            and row[f"Final S{index}"]
+        ]
+        connection.execute(
+            'UPDATE "serveis_horaris" SET is_night = ? WHERE Torn = ?',
+            (int(any(flags)), str(row["Torn"])),
+        )
 
 
 def _published_plan_snapshot(connection: sqlite3.Connection) -> tuple[str, int]:
@@ -341,6 +392,51 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tancaments_hores_realitzades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_inici TEXT NOT NULL,
+            data_fi TEXT NOT NULL,
+            estat TEXT NOT NULL DEFAULT 'tancat'
+                CHECK (estat IN ('tancat', 'revertit')),
+            assignacions_confirmades INTEGER NOT NULL,
+            minuts_confirmats INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            reverted_at TEXT,
+            motiu_reversio TEXT,
+            CHECK (data_fi >= data_inici),
+            CHECK (assignacions_confirmades >= 0),
+            CHECK (minuts_confirmats >= 0)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hores_realitzades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tancament_id INTEGER NOT NULL,
+            assignacio_id INTEGER NOT NULL,
+            treballador_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            servei TEXT NOT NULL,
+            hora_inici TEXT NOT NULL,
+            hora_fi TEXT NOT NULL,
+            durada_minuts INTEGER NOT NULL,
+            es_canvi_zona INTEGER NOT NULL DEFAULT 0,
+            es_canvi_torn INTEGER NOT NULL DEFAULT 0,
+            estat TEXT NOT NULL DEFAULT 'confirmada'
+                CHECK (estat IN ('confirmada', 'anul_lada')),
+            origen TEXT NOT NULL DEFAULT 'pla_publicat',
+            observacions TEXT,
+            confirmada_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            anul_lada_at TEXT,
+            FOREIGN KEY (tancament_id)
+                REFERENCES tancaments_hores_realitzades(id),
+            CHECK (durada_minuts > 0)
+        )
+        """
+    )
     publication_columns = {
         str(row[1])
         for row in connection.execute(
@@ -404,6 +500,25 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
         ON versions_pla_publicat(created_at, versio)
         """
     )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hores_realitzades_necessitat_activa
+        ON hores_realitzades(data, servei)
+        WHERE estat = 'confirmada'
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_hores_realitzades_treballador_data
+        ON hores_realitzades(treballador_id, data, estat)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_hores_realitzades_tancament
+        ON hores_realitzades(tancament_id, estat)
+        """
+    )
     if _table_exists(connection, "assig_grup_T"):
         connection.execute(
             """
@@ -429,6 +544,7 @@ def migrate_planning_schema(database_path: str | Path) -> None:
         try:
             connection.execute("BEGIN IMMEDIATE")
             _repair_legacy_replanning_foreign_key(connection)
+            _migrate_service_night_indicator(connection)
             _create_generic_schema(connection)
             connection.commit()
         except Exception:

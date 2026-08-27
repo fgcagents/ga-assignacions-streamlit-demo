@@ -29,6 +29,12 @@ HARD_RULES = (
 
 SOFT_RULES = (
     RuleSpec("coverage", "Màxima cobertura", "objective", "cobertura"),
+    RuleSpec(
+        "covered_minutes",
+        "Màxim de minuts coberts",
+        "objective",
+        "hores_cobertes",
+    ),
     RuleSpec("plan_stability", "Mínima alteració", "objective", "estabilitat_pla"),
     RuleSpec("consecutive_days", "Dies consecutius", "diagnostic", "postanalisi"),
     RuleSpec("friday", "Regla de divendres", "diagnostic", "postanalisi"),
@@ -37,10 +43,22 @@ SOFT_RULES = (
         "annual_equity",
         "Equitat sobre la referència contractual del 75%",
         "objective",
-        "equitat_hores_contractual",
+        "equitat_social",
     ),
-    RuleSpec("zone_changes", "Canvis totals de zona", "tiebreak", "desempat_canvis"),
-    RuleSpec("turn_changes", "Canvis totals de torn", "tiebreak", "desempat_canvis"),
+    RuleSpec(
+        "outside_preference",
+        "Mínim de serveis fora de torn o zona",
+        "objective",
+        "equitat_social",
+    ),
+    RuleSpec(
+        "night_equity",
+        "Màxim nocturn acumulat mínim",
+        "objective",
+        "equitat_social",
+    ),
+    RuleSpec("zone_changes", "Canvis totals de zona", "diagnostic", "postanalisi"),
+    RuleSpec("turn_changes", "Canvis totals de torn", "diagnostic", "postanalisi"),
 )
 
 

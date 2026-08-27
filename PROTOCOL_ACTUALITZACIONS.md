@@ -1,67 +1,43 @@
 # Protocol de promoció de canvis
 
-> **Promoció completada:** el 20/08/2026 s’han sincronitzat l’aplicació
-> multipàgina, el nucli incremental i els modes de desplegament amb aquesta
-> còpia de demostració. La promoció conserva el límit dur d'11 dies
-> consecutius i recupera el motor simple: cobertura, estabilitat opcional,
-> equitat d'hores sobre la referència contractual del 75% i desempat pel total
-> de canvis de zona i torn. La referència només s'ajusta per les absències
-> pròpies. S'han retirat de l'execució les fases addicionals, l'índex compost,
-> els reintents dirigits i la porta d'aprovació; els diagnòstics continuen
-> disponibles com a informació no bloquejant.
+## Estat Alfa 1
 
-## Carpetes
+La còpia desplegable inclou l'aplicació multipàgina, el tancament d'hores
+realitzades, el selector de motors i el `PriorityPlanner`. El motor vigent
+continua seleccionat per defecte.
 
-- **Projecte de treball:** arrel del repositori.
-- **Projecte de proves:** `deploy/streamlit_demo`.
+La base pseudonimitzada es regenera des de
+`treballadors_2025_absentisme_base.db`. L'aplicació arrenca en mode `active`
+amb publicació habilitada, sempre sobre una còpia temporal per sessió.
 
-El projecte de treball és la font funcional. El projecte de proves és una
-còpia desplegable destinada a demostració i validació d'usuaris.
+## Carpetes sincronitzades
+
+- `app_pages/`
+- `planificador_cp_sat/`
+- `cp_sat_pilot/src/cp_sat_pilot/`
+
+El projecte de treball és la font funcional. Aquest repositori conserva només
+les adaptacions de desplegament a `streamlit_app.py`, la base pseudonimitzada i
+els seus controls.
 
 ## Regla de promoció
 
-Un canvi només passa al projecte de proves quan:
+Un canvi passa a la demo quan:
 
-1. s'ha implementat al projecte de treball;
-2. supera les proves específiques i les bateries generals;
-3. s'ha revisat funcionalment a Streamlit;
-4. l'usuari l'ha acceptat explícitament;
-5. no introdueix dades personals, resultats ni còpies de seguretat.
+1. està implementat al projecte de treball;
+2. supera les proves específiques;
+3. s'han sincronitzat les tres carpetes anteriors sense `__pycache__` ni `.pyc`;
+4. s'ha regenerat la base demo si ha canviat l'escenari;
+5. `python scripts\verify_deploy.py --require-demo-data` acaba correctament;
+6. no s'inclouen dades personals, backups ni resultats operatius.
 
-## Fitxers sincronitzats
+## Abans del commit
 
-| Projecte de treball | Projecte de proves |
-|---|---|
-| `streamlit_app.py` | `streamlit_app.py`, conservant la base temporal de sessió |
-| `app_pages/` | mateixa ruta |
-| `planificador_cp_sat/` | mateixa ruta |
-| `cp_sat_pilot/src/cp_sat_pilot/` | mateixa ruta |
+```powershell
+git status --short
+git diff --check
+python scripts\verify_deploy.py --require-demo-data
+```
 
-`streamlit_app.py` conserva una adaptació pròpia: utilitza una còpia temporal
-per sessió de `data/treballadors_demo.db`. Aquesta adaptació no s'ha de perdre
-quan es promocionin canvis de `streamlit_app.py`.
-
-## Procediment després d'una acceptació
-
-1. Identificar els fitxers afectats mitjançant la taula anterior.
-2. Copiar únicament aquests fitxers al projecte de proves.
-3. Reaplicar, si cal, l'adaptació de base temporal de `streamlit_app.py`.
-4. Actualitzar `requirements.txt` si canvien les dependències.
-5. Actualitzar el manual o aquest protocol si canvia el recorregut d'usuari.
-6. Executar `python scripts/verify_deploy.py`.
-7. Provar l'arrencada amb una còpia de la base de dades.
-8. Si canvia l'esquema o la càrrega de dades, regenerar la base demo amb
-   `scripts/create_demo_database.py` i revisar `data/ANONIMITZACIO.md`.
-9. Incorporar el canvi al repositori de proves amb una descripció clara.
-
-El push a GitHub es farà quan el repositori remot estigui configurat i l'usuari
-ho demani o confirmi dins del flux de publicació.
-
-## Fitxers que no es promocionen
-
-- `treballadors.db` i qualsevol base operativa;
-- `backups/`, còpies de seguretat o rollbacks;
-- CSV, JSON, logs i resultats generats;
-- entorns virtuals, memòria cau i fitxers compilats;
-- eines, prototips o pantalles del GA no utilitzats per `streamlit_app.py`;
-- proves que depenguin de dades reals.
+La llista de canvis no ha de contenir `__pycache__`, `.pyc` ni cap SQLite fora
+de `data/treballadors_demo.db`.

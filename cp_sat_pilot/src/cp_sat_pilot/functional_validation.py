@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict
 from itertools import combinations
 from typing import Iterable
 
@@ -344,6 +345,11 @@ def analyze_functional_result(
                 if metrics
                 else None
             ),
+            "resum_social": (
+                asdict(result.social_diagnostic_summary)
+                if result.social_diagnostic_summary
+                else None
+            ),
             "diagnostics_treballador": [
                 {
                     "treballador": item.worker_id,
@@ -373,6 +379,41 @@ def analyze_functional_result(
                         item.peer_gap_permille / 10, 1
                     ),
                     "estat_revisio": item.review_status,
+                    "serveis_actuals": item.current_services,
+                    "serveis_historics": item.historical_services,
+                    "serveis_acumulats": item.accumulated_services,
+                    "serveis_fora_zona_actuals": (
+                        item.current_zone_exception_services
+                    ),
+                    "serveis_fora_zona_historics": (
+                        item.historical_zone_exception_services
+                    ),
+                    "serveis_fora_zona_acumulats": (
+                        item.accumulated_zone_exception_services
+                    ),
+                    "serveis_fora_torn_actuals": (
+                        item.current_turn_exception_services
+                    ),
+                    "serveis_fora_torn_historics": (
+                        item.historical_turn_exception_services
+                    ),
+                    "serveis_fora_torn_acumulats": (
+                        item.accumulated_turn_exception_services
+                    ),
+                    "serveis_fora_torn_i_zona_actuals": (
+                        item.current_double_exception_services
+                    ),
+                    "serveis_nocturns_actuals": item.current_night_services,
+                    "serveis_nocturns_historics": (
+                        item.historical_night_services
+                    ),
+                    "serveis_nocturns_acumulats": (
+                        item.accumulated_night_services
+                    ),
+                    "pot_fer_serveis_nocturns": item.can_work_nights,
+                    "perfil_comparacio": item.comparison_profile,
+                    "mida_grup_comparacio": item.comparison_group_size,
+                    "estat_comparacio": item.comparison_status,
                     "justificacions": list(item.justification_codes),
                 }
                 for item in result.equity_diagnostics

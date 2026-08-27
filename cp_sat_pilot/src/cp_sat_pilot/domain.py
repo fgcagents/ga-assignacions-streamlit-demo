@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Iterable
 
 
 MINIMUM_REST_MINUTES = 12 * 60
+NIGHT_START_TIME = time(19, 0)
+NIGHT_END_LIMIT = time(6, 0)
+
+
+def is_night_interval(start: datetime, end: datetime) -> bool:
+    """Classifica un servei nocturn només a partir del seu interval."""
+    next_day = start.date() + timedelta(days=1)
+    midnight = datetime.combine(next_day, time.min)
+    latest_end = datetime.combine(next_day, NIGHT_END_LIMIT)
+    return (
+        start.time() > NIGHT_START_TIME
+        and midnight < end <= latest_end
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +31,12 @@ class Worker:
     max_annual_minutes: int = 1605 * 60
     home_zone: str = ""
     turn_options: frozenset[str] = field(default_factory=frozenset)
+    can_work_nights: bool = field(init=False)
     historical_assignments: int = 0
     historical_zone_changes: int = 0
     historical_turn_changes: int = 0
+    historical_preference_exceptions: int = 0
+    historical_night_services: int = 0
     annual_equity_target_minutes: int = 0
     annual_equity_basis_days: int = 0
     annual_absence_days: int = 0
@@ -31,6 +47,20 @@ class Worker:
     annual_reliever_uplift_minutes: int = 0
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "can_work_nights",
+            any(option.casefold() == "nit" for option in self.turn_options),
+        )
+        if self.historical_preference_exceptions <= 0:
+            object.__setattr__(
+                self,
+                "historical_preference_exceptions",
+                max(
+                    self.historical_zone_changes,
+                    self.historical_turn_changes,
+                ),
+            )
         if self.annual_equity_target_minutes <= 0:
             object.__setattr__(
                 self,
@@ -65,6 +95,15 @@ class Need:
     required_skills: frozenset[str]
     zone: str = ""
     turn_options: frozenset[str] = field(default_factory=frozenset)
+    is_night: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.is_night is None:
+            object.__setattr__(
+                self,
+                "is_night",
+                is_night_interval(self.start, self.end),
+            )
 
     @property
     def duration_minutes(self) -> int:
@@ -79,6 +118,14 @@ class HistoricalAssignment:
     duration_minutes: int
     zone_change: bool = False
     turn_change: bool = False
+    is_night: bool = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "is_night",
+            is_night_interval(self.start, self.end),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +251,7 @@ class SolveResult:
     soft_metrics: SoftMetrics | None = None
     optimization_phases: tuple[OptimizationPhase, ...] = ()
     equity_diagnostics: tuple[EquityWorkerDiagnostic, ...] = ()
+    social_diagnostic_summary: SocialDiagnosticSummary | None = None
 
     @property
     def feasible(self) -> bool:
@@ -244,6 +292,9 @@ class SoftMetrics:
     normalized_total_changes: int
     opportunistic_equity_objective: int
     adjusted_annual_rate_range_permille: int = 0
+    outside_preference_services: int = 0
+    max_accumulated_night_services: int = 0
+    social_objective: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +316,49 @@ class EquityWorkerDiagnostic:
     flexible_target_minutes: int = 0
     reliever_uplift_minutes: int = 0
     maximum_minutes: int = 0
+    current_services: int = 0
+    historical_services: int = 0
+    accumulated_services: int = 0
+    current_zone_exception_services: int = 0
+    historical_zone_exception_services: int = 0
+    accumulated_zone_exception_services: int = 0
+    current_turn_exception_services: int = 0
+    historical_turn_exception_services: int = 0
+    accumulated_turn_exception_services: int = 0
+    current_double_exception_services: int = 0
+    historical_double_exception_services: int = 0
+    accumulated_double_exception_services: int = 0
+    current_preference_exception_services: int = 0
+    historical_preference_exception_services: int = 0
+    accumulated_preference_exception_services: int = 0
+    current_night_services: int = 0
+    historical_night_services: int | None = None
+    accumulated_night_services: int | None = None
+    can_work_nights: bool = False
+    comparison_profile: str = ""
+    comparison_group_size: int = 0
+    comparison_status: str = "sense perfil comparable"
+
+
+@dataclass(frozen=True, slots=True)
+class SocialDiagnosticSummary:
+    worker_count: int
+    comparable_worker_count: int
+    comparison_profile_count: int
+    unique_profile_worker_count: int
+    current_services: int
+    current_zone_exception_services: int
+    current_turn_exception_services: int
+    current_double_exception_services: int
+    current_night_services: int
+    night_capable_worker_count: int
+    completion_rate_mean_absolute_deviation_permille: float
+    completion_rate_gini: float
+    completion_rate_p10_permille: float
+    completion_rate_p90_permille: float
+    completion_rate_p90_p10_gap_permille: float
+    night_history_available: bool = False
+    current_preference_exception_services: int = 0
 
 
 def assignments_compatible(

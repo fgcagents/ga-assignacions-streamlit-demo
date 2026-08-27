@@ -16,16 +16,20 @@ REQUIRED_PATHS = (
     ROOT / "app_pages" / "resum.py",
     ROOT / "app_pages" / "planificacio.py",
     ROOT / "app_pages" / "pla_publicat.py",
+    ROOT / "app_pages" / "hores_realitzades.py",
     ROOT / "app_pages" / "personal.py",
     ROOT / "app_pages" / "incidencies.py",
     ROOT / "planificador_cp_sat" / "ui" / "dashboard.py",
     ROOT / "planificador_cp_sat" / "ui" / "planificacio.py",
     ROOT / "planificador_cp_sat" / "services" / "esquema_planificacio.py",
     ROOT / "planificador_cp_sat" / "services" / "replanificacio.py",
+    ROOT / "planificador_cp_sat" / "services" / "hores_realitzades.py",
+    ROOT / "planificador_cp_sat" / "solver_engines" / "__init__.py",
     ROOT / "scripts" / "create_demo_database.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "model.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "domain.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "quality.py",
+    ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "priority_planner.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "sqlite_adapter.py",
     ROOT
     / "cp_sat_pilot"
@@ -38,6 +42,11 @@ REQUIRED_PATHS = (
     ROOT / "planificador_cp_sat" / "services" / "publicacio_planificacio.py",
 )
 FORBIDDEN_DIRECTORIES = {"backups", "copies", ".venv", "__pycache__"}
+REQUIRED_APP_DEFAULTS = (
+    'os.environ.setdefault("PLANIFICACIO_INCREMENTAL_MODE", "active")',
+    '"PLANIFICACIO_INCREMENTAL_PUBLICATION_ENABLED",',
+    '"true",',
+)
 
 
 def _verify_demo_database() -> list[str]:
@@ -114,6 +123,14 @@ def verify(require_demo_data: bool = False) -> list[str]:
         errors.append("Falta data/treballadors_demo.db")
     if DEMO_DATABASE.exists():
         errors.extend(_verify_demo_database())
+
+    app_source = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    for expected in REQUIRED_APP_DEFAULTS:
+        if expected not in app_source:
+            errors.append(
+                "Falta la configuració activa de desplegament a streamlit_app.py: "
+                f"{expected}"
+            )
 
     for path in ROOT.rglob("*.py"):
         if "__pycache__" in path.parts:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
-from statistics import median
+from statistics import mean, median
+from time import monotonic
 from typing import Iterable
 
 from ortools.sat.python import cp_model
@@ -11,15 +13,20 @@ from .constraints import (
     HardConstraintSet,
     SoftComponents,
     SoftObjectiveWeights,
-    build_soft_components,
 )
-from .constraints.soft.operational import is_turn_change, is_zone_change
+from .constraints.soft.equity import build_equity_components
+from .constraints.soft.operational import (
+    build_operational_components,
+    is_turn_change,
+    is_zone_change,
+)
 from .domain import (
     Assignment,
     EquityWorkerDiagnostic,
     Need,
     OptimizationPhase,
     PlanningProblem,
+    SocialDiagnosticSummary,
     SoftMetrics,
     SolveResult,
     Worker,
@@ -34,12 +41,40 @@ STATUS_NAMES = {
     cp_model.OPTIMAL: "OPTIMAL",
 }
 INFORMATIONAL_EQUITY_GAP_PERMILLE = 100
+FINALIZATION_RESERVE_SECONDS = 1.0
+
+
+def _comparison_profile(worker: Worker) -> str:
+    skills = "+".join(sorted(worker.skills)) or "-"
+    turns = "+".join(sorted(worker.turn_options)) or "-"
+    return f"habilitacions={skills}|zona={worker.home_zone or '-'}|torn={turns}"
+
+
+def _percentile(values: list[int], proportion: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = proportion * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def _gini(values: list[int]) -> float:
+    if not values or sum(values) == 0:
+        return 0.0
+    absolute_differences = sum(
+        abs(first - second) for first in values for second in values
+    )
+    return absolute_differences / (2 * len(values) * sum(values))
 
 
 @dataclass(frozen=True, slots=True)
 class SolverConfig:
-    max_time_seconds: float = 60.0
-    equity_time_seconds: float = 15.0
+    max_time_seconds: float | None = None
+    # Temps reservat dins del límit global per a la fase final d'equitat.
+    equity_time_seconds: float | None = None
     num_workers: int = 8
     random_seed: int = 0
     log_search_progress: bool = False
@@ -73,109 +108,203 @@ class CpSatPlanner:
     def solve(self, config: SolverConfig | None = None) -> SolveResult:
         config = config or SolverConfig()
         self._validate_config(config)
+        started_at = monotonic()
+        total_budget = self.total_time_limit(config)
+        finalization_reserve = min(
+            FINALIZATION_RESERVE_SECONDS,
+            total_budget * 0.05,
+        )
+        deadline = started_at + max(
+            0.001,
+            total_budget - finalization_reserve,
+        )
+        equity_reserve = min(
+            config.equity_time_seconds or 0.0,
+            max(0.0, deadline - started_at - 0.001),
+        )
+        pre_equity_deadline = deadline - equity_reserve
         core = self._build_core_model()
         model = core.model
         phases: list[OptimizationPhase] = []
 
         model.maximize(sum(core.coverage_vars.values()))
         coverage_solver, coverage_phase = self._solve_phase(
-            model, config, "cobertura", maximize=True
+            model,
+            config,
+            "cobertura",
+            maximize=True,
+            time_limit_seconds=max(0.001, pre_equity_deadline - monotonic()),
         )
         phases.append(coverage_phase)
         if coverage_phase.status not in {"FEASIBLE", "OPTIMAL"}:
             return self._empty_result(core, phases)
+        if coverage_phase.status != "OPTIMAL":
+            return self._finish_result(
+                core,
+                phases,
+                coverage_solver,
+                coverage_phase,
+                started_at,
+                complete=False,
+            )
 
         coverage_target = round(coverage_phase.objective_value or 0)
         model.add(sum(core.coverage_vars.values()) == coverage_target)
-        soft = self._build_soft_components(
+        operational = build_operational_components(
+            self.problem,
             core,
+            self.workers,
+            self.needs,
+            self.history_by_worker,
             coverage_target=coverage_target,
             weights=config.soft_weights,
         )
 
-        model.clear_objective()
-        stable_references_exist = any(
+        final_solver = coverage_solver
+        self._add_assignment_hints(model, core, coverage_solver)
+
+        if self.problem.reference_assignments and any(
             assignment.need_id not in self.problem.affected_need_ids
             for assignment in self.problem.reference_assignments
-        )
-        stability_solver: cp_model.CpSolver | None = None
-        if stable_references_exist:
-            model.minimize(soft.plan_alterations)
-            stability_solver, stability_phase = self._solve_phase(
-                model, config, "estabilitat_pla", maximize=False
-            )
-        else:
-            stability_phase = OptimizationPhase(
-                name="estabilitat_pla",
-                status="OPTIMAL",
-                objective_value=0.0,
-                best_objective_bound=0.0,
-                relative_gap=0.0,
-                wall_time_seconds=0.0,
-                conflicts=0,
-                branches=0,
-            )
-        phases.append(stability_phase)
-
-        final_solver = coverage_solver
-        soft_solution_available = False
-        if stability_phase.status in {"FEASIBLE", "OPTIMAL"}:
-            if stability_solver is not None:
-                final_solver = stability_solver
-                soft_solution_available = True
-            stability_target = round(stability_phase.objective_value or 0)
-            model.add(soft.plan_alterations == stability_target)
-            self._add_assignment_hints(model, core, final_solver)
-
+        ):
+            if monotonic() >= pre_equity_deadline:
+                return self._finish_result(
+                    core,
+                    phases,
+                    final_solver,
+                    coverage_phase,
+                    started_at,
+                    complete=False,
+                )
             model.clear_objective()
-            model.minimize(soft.annual_fairness_objective)
-            equity_solver, equity_phase = self._solve_phase(
+            model.minimize(operational.plan_alterations)
+            stability_solver, stability_phase = self._solve_phase(
                 model,
                 config,
-                "equitat_hores_contractual",
+                "estabilitat_pla",
                 maximize=False,
-                time_limit_seconds=config.equity_time_seconds,
+                time_limit_seconds=max(
+                    0.001, pre_equity_deadline - monotonic()
+                ),
             )
-            phases.append(equity_phase)
-            if equity_phase.status in {"FEASIBLE", "OPTIMAL"}:
-                final_solver = equity_solver
-                soft_solution_available = True
-                model.add(
-                    soft.annual_fairness_objective
-                    == round(equity_phase.objective_value or 0)
+            phases.append(stability_phase)
+            if stability_phase.status in {"FEASIBLE", "OPTIMAL"}:
+                final_solver = stability_solver
+            if stability_phase.status != "OPTIMAL":
+                return self._finish_result(
+                    core,
+                    phases,
+                    final_solver,
+                    coverage_phase,
+                    started_at,
+                    complete=False,
                 )
-                self._add_assignment_hints(model, core, equity_solver)
+            model.add(
+                operational.plan_alterations
+                == round(stability_phase.objective_value or 0)
+            )
+            self._add_assignment_hints(model, core, final_solver)
 
-                model.clear_objective()
-                model.minimize(soft.change_tiebreak_penalty)
-                changes_solver, changes_phase = self._solve_phase(
-                    model,
-                    config,
-                    "desempat_canvis",
-                    maximize=False,
-                    time_limit_seconds=config.equity_time_seconds,
-                )
-                phases.append(changes_phase)
-                if changes_phase.status in {"FEASIBLE", "OPTIMAL"}:
-                    final_solver = changes_solver
+        if monotonic() >= pre_equity_deadline:
+            return self._finish_result(
+                core,
+                phases,
+                final_solver,
+                coverage_phase,
+                started_at,
+                complete=False,
+            )
+        covered_minutes = sum(
+            self.needs[need_id].duration_minutes * variable
+            for need_id, variable in core.coverage_vars.items()
+        )
+        self._add_assignment_hints(model, core, final_solver)
+        model.clear_objective()
+        model.maximize(covered_minutes)
+        hours_solver, hours_phase = self._solve_phase(
+            model,
+            config,
+            "hores_cobertes",
+            maximize=True,
+            time_limit_seconds=max(0.001, pre_equity_deadline - monotonic()),
+        )
+        phases.append(hours_phase)
+        if hours_phase.status in {"FEASIBLE", "OPTIMAL"}:
+            final_solver = hours_solver
+        if hours_phase.status != "OPTIMAL":
+            return self._finish_result(
+                core,
+                phases,
+                final_solver,
+                coverage_phase,
+                started_at,
+                complete=False,
+            )
+        model.add(covered_minutes == round(hours_phase.objective_value or 0))
+        if monotonic() >= pre_equity_deadline:
+            return self._finish_result(
+                core,
+                phases,
+                final_solver,
+                coverage_phase,
+                started_at,
+                complete=False,
+            )
+        soft = build_equity_components(
+            core,
+            operational,
+            self.workers,
+            self.needs,
+            config.soft_weights,
+        )
+        self._add_assignment_hints(model, core, hours_solver)
+        model.clear_objective()
+        model.minimize(soft.social_objective)
+        social_solver, social_phase = self._solve_phase(
+            model,
+            config,
+            "equitat_social",
+            maximize=False,
+            time_limit_seconds=max(0.001, deadline - monotonic()),
+        )
+        phases.append(social_phase)
+        if social_phase.status in {"FEASIBLE", "OPTIMAL"}:
+            final_solver = social_solver
+        return self._finish_result(
+            core,
+            phases,
+            final_solver,
+            coverage_phase,
+            started_at,
+            soft=soft,
+            complete=social_phase.status == "OPTIMAL",
+        )
 
+    def _finish_result(
+        self,
+        core: CoreModel,
+        phases: list[OptimizationPhase],
+        solver: cp_model.CpSolver,
+        coverage_phase: OptimizationPhase,
+        started_at: float,
+        *,
+        soft: SoftComponents | None = None,
+        complete: bool,
+    ) -> SolveResult:
         assignments = self._extract_assignments(
-            final_solver, core.assignment_vars
+            solver, core.assignment_vars
         )
         errors = tuple(self.validate(assignments))
-        soft_metrics = (
-            self._extract_soft_metrics(final_solver, soft)
-            if soft_solution_available
-            else None
-        )
-        equity_diagnostics = self._build_equity_diagnostics(assignments)
-        status = (
-            "OPTIMAL"
-            if all(phase.status == "OPTIMAL" for phase in phases)
-            else "FEASIBLE"
+        diagnostics, social_summary = self._build_equity_diagnostics(
+            assignments
         )
         return SolveResult(
-            status=status,
+            status=(
+                "OPTIMAL"
+                if complete
+                and all(phase.status == "OPTIMAL" for phase in phases)
+                else "FEASIBLE"
+            ),
             assignments=tuple(assignments),
             covered_needs=len(
                 {assignment.need_id for assignment in assignments}
@@ -184,26 +313,36 @@ class CpSatPlanner:
             objective_value=coverage_phase.objective_value,
             best_objective_bound=coverage_phase.best_objective_bound,
             relative_gap=coverage_phase.relative_gap,
-            wall_time_seconds=sum(
-                phase.wall_time_seconds for phase in phases
-            ),
+            wall_time_seconds=monotonic() - started_at,
             conflicts=sum(phase.conflicts for phase in phases),
             branches=sum(phase.branches for phase in phases),
             candidate_variables=len(core.candidate_pairs),
-            incompatibility_constraints=(
-                core.incompatibility_constraints
-            ),
+            incompatibility_constraints=core.incompatibility_constraints,
             validation_errors=errors,
-            soft_metrics=soft_metrics,
+            soft_metrics=(
+                self._extract_soft_metrics(solver, soft)
+                if soft is not None
+                else None
+            ),
             optimization_phases=tuple(phases),
-            equity_diagnostics=equity_diagnostics,
+            equity_diagnostics=diagnostics,
+            social_diagnostic_summary=social_summary,
         )
+
+    def total_time_limit(self, config: SolverConfig) -> float:
+        maximum = 60.0 if self.problem.reference_assignments else 120.0
+        if config.max_time_seconds is None:
+            return maximum
+        return min(config.max_time_seconds, maximum)
 
     @staticmethod
     def _validate_config(config: SolverConfig) -> None:
-        if config.max_time_seconds <= 0:
+        if config.max_time_seconds is not None and config.max_time_seconds <= 0:
             raise ValueError("El límit de temps ha de ser positiu")
-        if config.equity_time_seconds <= 0:
+        if (
+            config.equity_time_seconds is not None
+            and config.equity_time_seconds <= 0
+        ):
             raise ValueError(
                 "El límit de la fase d'equitat ha de ser positiu"
             )
@@ -232,23 +371,6 @@ class CpSatPlanner:
     def _build_core_model(self) -> CoreModel:
         return self.hard_constraints.build_core_model()
 
-    def _build_soft_components(
-        self,
-        core: CoreModel,
-        *,
-        coverage_target: int,
-        weights: SoftObjectiveWeights,
-    ) -> SoftComponents:
-        return build_soft_components(
-            self.problem,
-            core,
-            self.workers,
-            self.needs,
-            self.history_by_worker,
-            coverage_target=coverage_target,
-            weights=weights,
-        )
-
     @staticmethod
     def _add_assignment_hints(
         model: cp_model.CpModel,
@@ -267,9 +389,9 @@ class CpSatPlanner:
     ) -> cp_model.CpSolver:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = (
-            config.max_time_seconds
-            if time_limit_seconds is None
-            else time_limit_seconds
+            time_limit_seconds
+            if time_limit_seconds is not None
+            else config.max_time_seconds or 60.0
         )
         solver.parameters.num_workers = config.num_workers
         solver.parameters.random_seed = config.random_seed
@@ -407,17 +529,33 @@ class CpSatPlanner:
             adjusted_annual_rate_range_permille=solver.value(
                 soft.adjusted_annual_rate_range
             ),
+            outside_preference_services=solver.value(
+                soft.outside_preference_services
+            ),
+            max_accumulated_night_services=solver.value(
+                soft.max_accumulated_night_services
+            ),
+            social_objective=solver.value(soft.social_objective),
         )
 
     def _build_equity_diagnostics(
         self,
         assignments: Iterable[Assignment],
-    ) -> tuple[EquityWorkerDiagnostic, ...]:
+    ) -> tuple[
+        tuple[EquityWorkerDiagnostic, ...], SocialDiagnosticSummary
+    ]:
         """Calcula informació posterior; no altera ni bloqueja el solver."""
 
         assigned_minutes: dict[str, int] = {}
         assigned_counts: dict[str, int] = {}
+        zone_exception_counts: dict[str, int] = {}
+        turn_exception_counts: dict[str, int] = {}
+        double_exception_counts: dict[str, int] = {}
+        preference_exception_counts: dict[str, int] = {}
+        night_counts: dict[str, int] = {}
         for assignment in assignments:
+            worker = self.workers[assignment.worker_id]
+            need = self.needs[assignment.need_id]
             assigned_minutes[assignment.worker_id] = (
                 assigned_minutes.get(assignment.worker_id, 0)
                 + assignment.duration_minutes
@@ -425,9 +563,35 @@ class CpSatPlanner:
             assigned_counts[assignment.worker_id] = (
                 assigned_counts.get(assignment.worker_id, 0) + 1
             )
+            zone_exception = is_zone_change(worker, need)
+            turn_exception = is_turn_change(worker, need)
+            if zone_exception:
+                zone_exception_counts[worker.id] = (
+                    zone_exception_counts.get(worker.id, 0) + 1
+                )
+            if turn_exception:
+                turn_exception_counts[worker.id] = (
+                    turn_exception_counts.get(worker.id, 0) + 1
+                )
+            if zone_exception and turn_exception:
+                double_exception_counts[worker.id] = (
+                    double_exception_counts.get(worker.id, 0) + 1
+                )
+            if zone_exception or turn_exception:
+                preference_exception_counts[worker.id] = (
+                    preference_exception_counts.get(worker.id, 0) + 1
+                )
+            if need.is_night:
+                night_counts[worker.id] = night_counts.get(worker.id, 0) + 1
 
         workers = tuple(
             worker for worker in self.problem.workers if worker.group == "T"
+        )
+        profiles = {worker.id: _comparison_profile(worker) for worker in workers}
+        profile_sizes = Counter(
+            profiles[worker.id]
+            for worker in workers
+            if worker.compatible_opportunities > 0
         )
         comparable_rates = []
         for worker in workers:
@@ -468,6 +632,14 @@ class CpSatPlanner:
                 codes.append("objectiu_ajustat_per_baixa")
             if worker.compatible_opportunities == 0:
                 codes.append("sense_oportunitats_compatibles")
+            group_size = profile_sizes.get(profiles[worker.id], 0)
+            if worker.compatible_opportunities <= 0:
+                comparison_status = "sense oportunitats compatibles"
+            elif group_size < 2:
+                comparison_status = "sense perfil comparable"
+                codes.append("sense_perfil_comparable")
+            else:
+                comparison_status = "comparable"
             peer_gap = round(completion_rate - reference_rate) if comparable else 0
             absolute_gap = abs(peer_gap)
             if not comparable:
@@ -483,6 +655,13 @@ class CpSatPlanner:
                     codes.append("desviacio_positiva_residual")
                 else:
                     codes.append("dins_marge_informatiu")
+            historical_nights = max(
+                worker.historical_night_services,
+                sum(
+                    assignment.is_night
+                    for assignment in self.history_by_worker.get(worker.id, ())
+                ),
+            )
             diagnostics.append(
                 EquityWorkerDiagnostic(
                     worker_id=worker.id,
@@ -513,9 +692,104 @@ class CpSatPlanner:
                         worker.annual_reliever_uplift_minutes
                     ),
                     maximum_minutes=worker.max_annual_minutes,
+                    current_services=assigned_counts.get(worker.id, 0),
+                    historical_services=worker.historical_assignments,
+                    accumulated_services=(
+                        worker.historical_assignments
+                        + assigned_counts.get(worker.id, 0)
+                    ),
+                    current_zone_exception_services=(
+                        zone_exception_counts.get(worker.id, 0)
+                    ),
+                    historical_zone_exception_services=(
+                        worker.historical_zone_changes
+                    ),
+                    accumulated_zone_exception_services=(
+                        worker.historical_zone_changes
+                        + zone_exception_counts.get(worker.id, 0)
+                    ),
+                    current_turn_exception_services=(
+                        turn_exception_counts.get(worker.id, 0)
+                    ),
+                    historical_turn_exception_services=(
+                        worker.historical_turn_changes
+                    ),
+                    accumulated_turn_exception_services=(
+                        worker.historical_turn_changes
+                        + turn_exception_counts.get(worker.id, 0)
+                    ),
+                    current_double_exception_services=(
+                        double_exception_counts.get(worker.id, 0)
+                    ),
+                    historical_double_exception_services=sum(
+                        assignment.zone_change and assignment.turn_change
+                        for assignment in self.history_by_worker.get(
+                            worker.id, ()
+                        )
+                    ),
+                    accumulated_double_exception_services=(
+                        double_exception_counts.get(worker.id, 0)
+                        + sum(
+                            assignment.zone_change and assignment.turn_change
+                            for assignment in self.history_by_worker.get(
+                                worker.id, ()
+                            )
+                        )
+                    ),
+                    current_preference_exception_services=(
+                        preference_exception_counts.get(worker.id, 0)
+                    ),
+                    historical_preference_exception_services=(
+                        worker.historical_preference_exceptions
+                    ),
+                    accumulated_preference_exception_services=(
+                        worker.historical_preference_exceptions
+                        + preference_exception_counts.get(worker.id, 0)
+                    ),
+                    current_night_services=night_counts.get(worker.id, 0),
+                    historical_night_services=historical_nights,
+                    accumulated_night_services=(
+                        historical_nights + night_counts.get(worker.id, 0)
+                    ),
+                    can_work_nights=worker.can_work_nights,
+                    comparison_profile=profiles[worker.id],
+                    comparison_group_size=group_size,
+                    comparison_status=comparison_status,
                 )
             )
-        return tuple(diagnostics)
+        rate_mean = mean(comparable_rates) if comparable_rates else 0.0
+        p10 = _percentile(comparable_rates, 0.10)
+        p90 = _percentile(comparable_rates, 0.90)
+        summary = SocialDiagnosticSummary(
+            worker_count=len(workers),
+            comparable_worker_count=len(comparable_rates),
+            comparison_profile_count=len(profile_sizes),
+            unique_profile_worker_count=sum(
+                size == 1 for size in profile_sizes.values()
+            ),
+            current_services=sum(assigned_counts.values()),
+            current_zone_exception_services=sum(zone_exception_counts.values()),
+            current_turn_exception_services=sum(turn_exception_counts.values()),
+            current_double_exception_services=sum(double_exception_counts.values()),
+            current_night_services=sum(night_counts.values()),
+            night_capable_worker_count=sum(
+                worker.can_work_nights for worker in workers
+            ),
+            completion_rate_mean_absolute_deviation_permille=round(
+                mean(abs(value - rate_mean) for value in comparable_rates), 3
+            )
+            if comparable_rates
+            else 0.0,
+            completion_rate_gini=round(_gini(comparable_rates), 6),
+            completion_rate_p10_permille=round(p10, 3),
+            completion_rate_p90_permille=round(p90, 3),
+            completion_rate_p90_p10_gap_permille=round(p90 - p10, 3),
+            night_history_available=True,
+            current_preference_exception_services=sum(
+                preference_exception_counts.values()
+            ),
+        )
+        return tuple(diagnostics), summary
 
     def _empty_result(
         self,

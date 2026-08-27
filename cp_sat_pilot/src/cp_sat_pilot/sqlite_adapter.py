@@ -12,7 +12,13 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from .domain import HistoricalAssignment, Need, PlanningProblem, Worker
+from .domain import (
+    HistoricalAssignment,
+    Need,
+    PlanningProblem,
+    Worker,
+    is_night_interval,
+)
 
 
 FULL_ANNUAL_MINUTES = 1605 * 60
@@ -31,6 +37,7 @@ class _ServiceWindow:
     day_codes: frozenset[str]
     start: time
     end: time
+    is_night: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +55,13 @@ def _readonly_connection(database_path: str | Path) -> sqlite3.Connection:
     connection = sqlite3.connect(f"file:{encoded}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
 
 
 def _parse_time(raw_value: object) -> time:
@@ -91,17 +105,6 @@ def _split_values(raw_value: object) -> frozenset[str]:
     return frozenset(part.strip() for part in value.split(",") if part.strip())
 
 
-def _prorated_target_minutes(
-    target_minutes: int,
-    basis_days: int,
-    absence_days: int,
-) -> int:
-    if basis_days <= 0:
-        return target_minutes
-    available_days = max(0, basis_days - absence_days)
-    return round(target_minutes * available_days / basis_days)
-
-
 def _annual_availability(
     annual_calendar_dates: set[date],
     base_rest_dates: set[date],
@@ -130,8 +133,17 @@ def _service_windows(
     connection: sqlite3.Connection,
 ) -> dict[str, tuple[_ServiceWindow, ...]]:
     windows: dict[str, tuple[_ServiceWindow, ...]] = {}
+    columns = {
+        str(row[1])
+        for row in connection.execute('PRAGMA table_info("serveis_horaris")')
+    }
     for row in connection.execute('SELECT * FROM "serveis_horaris"'):
         service_id = str(row["Torn"])
+        stored_is_night = (
+            bool(row["is_night"])
+            if "is_night" in columns
+            else None
+        )
         variants: list[_ServiceWindow] = []
         for index in range(1, 5):
             codes = row[f"Servei {index}"]
@@ -149,6 +161,7 @@ def _service_windows(
                     day_codes=day_codes,
                     start=_parse_time(start),
                     end=_parse_time(end),
+                    is_night=stored_is_night,
                 )
             )
         windows[service_id] = tuple(variants)
@@ -235,14 +248,75 @@ def load_problem_from_sqlite(
         historical_counts: dict[str, int] = {}
         historical_zone_changes: dict[str, int] = {}
         historical_turn_changes: dict[str, int] = {}
+        historical_preference_exceptions: dict[str, int] = {}
+        historical_night_services: dict[str, int] = {}
         exclusions: set[tuple[str, date]] = set()
         history_by_worker: dict[str, list[HistoricalAssignment]] = {}
+
+        # Les hores tancades són la font immutable de treball real. Quan una
+        # necessitat ja està confirmada, l'entrada equivalent de l'històric
+        # publicat no es torna a sumar.
+        realized_needs: set[tuple[date, str]] = set()
+        if _table_exists(connection, "hores_realitzades"):
+            for row in connection.execute(
+                """
+                SELECT * FROM hores_realitzades
+                WHERE estat = 'confirmada'
+                ORDER BY data, servei, id
+                """
+            ):
+                worker_id = str(row["treballador_id"])
+                if worker_id not in worker_ids:
+                    continue
+                assignment_date = _parse_date(row["data"])
+                realized_needs.add((assignment_date, str(row["servei"])))
+                duration_minutes = int(row["durada_minuts"])
+                annual_minutes[worker_id] = (
+                    annual_minutes.get(worker_id, 0) + duration_minutes
+                )
+                zone_change = bool(row["es_canvi_zona"])
+                turn_change = bool(row["es_canvi_torn"])
+                historical_counts[worker_id] = (
+                    historical_counts.get(worker_id, 0) + 1
+                )
+                historical_zone_changes[worker_id] = (
+                    historical_zone_changes.get(worker_id, 0) + int(zone_change)
+                )
+                historical_turn_changes[worker_id] = (
+                    historical_turn_changes.get(worker_id, 0) + int(turn_change)
+                )
+                historical_preference_exceptions[worker_id] = (
+                    historical_preference_exceptions.get(worker_id, 0)
+                    + int(zone_change or turn_change)
+                )
+                start_time = _parse_time(row["hora_inici"])
+                end_time = _parse_time(row["hora_fi"])
+                start = datetime.combine(assignment_date, start_time)
+                end = datetime.combine(assignment_date, end_time)
+                if end_time < start_time:
+                    end += timedelta(days=1)
+                historical_night_services[worker_id] = (
+                    historical_night_services.get(worker_id, 0)
+                    + int(is_night_interval(start, end))
+                )
+                history_by_worker.setdefault(worker_id, []).append(
+                    HistoricalAssignment(
+                        worker_id=worker_id,
+                        start=start,
+                        end=end,
+                        duration_minutes=duration_minutes,
+                        zone_change=zone_change,
+                        turn_change=turn_change,
+                    )
+                )
 
         for row in connection.execute('SELECT * FROM "historic_assignacions"'):
             worker_id = str(row["treballador_id"])
             if worker_id not in worker_ids:
                 continue
             assignment_date = _parse_date(row["data"])
+            if (assignment_date, str(row["torn_id"])) in realized_needs:
+                continue
             duration_minutes = round(float(row["durada_hores"] or 0) * 60)
             annual_minutes[worker_id] = (
                 annual_minutes.get(worker_id, 0) + duration_minutes
@@ -265,12 +339,20 @@ def load_problem_from_sqlite(
             historical_turn_changes[worker_id] = (
                 historical_turn_changes.get(worker_id, 0) + int(turn_change)
             )
+            historical_preference_exceptions[worker_id] = (
+                historical_preference_exceptions.get(worker_id, 0)
+                + int(zone_change or turn_change)
+            )
             start_time = _parse_time(row["hora_inici"])
             end_time = _parse_time(row["hora_fi"])
             start = datetime.combine(assignment_date, start_time)
             end = datetime.combine(assignment_date, end_time)
             if end_time < start_time:
                 end += timedelta(days=1)
+            historical_night_services[worker_id] = (
+                historical_night_services.get(worker_id, 0)
+                + int(is_night_interval(start, end))
+            )
             history_by_worker.setdefault(worker_id, []).append(
                 HistoricalAssignment(
                     worker_id=worker_id,
@@ -337,17 +419,13 @@ def load_problem_from_sqlite(
             available_dates = available_dates_by_worker[worker_id]
             if group == "T":
                 # El 75 % de la jornada anual és la referència contractual
-                # comuna del grup T. No és un mínim dur ni creix segons
-                # les baixes del grup A; només es prorrateja per les baixes
-                # pròpies per poder comparar disponibilitats diferents.
+                # comuna i fixa del grup T. Les baixes limiten la
+                # disponibilitat, però no redueixen l'objectiu ni esborren
+                # el dèficit que s'ha de compensar durant l'any.
                 base_target = GROUP_T_CONTRACTUAL_REFERENCE_MINUTES
                 flexible_target = base_target
                 uplift = 0
-                target = _prorated_target_minutes(
-                    base_target,
-                    basis_days,
-                    absence_days,
-                )
+                target = base_target
             else:
                 base_target = FULL_ANNUAL_MINUTES
                 flexible_target = FULL_ANNUAL_MINUTES
@@ -393,6 +471,12 @@ def load_problem_from_sqlite(
                     str(row["id"]), 0
                 ),
                 historical_turn_changes=historical_turn_changes.get(
+                    str(row["id"]), 0
+                ),
+                historical_preference_exceptions=(
+                    historical_preference_exceptions.get(str(row["id"]), 0)
+                ),
+                historical_night_services=historical_night_services.get(
                     str(row["id"]), 0
                 ),
                 annual_equity_target_minutes=equity_profiles[str(row["id"])][0],
@@ -461,6 +545,7 @@ def load_problem_from_sqlite(
                     required_skills=item.skills,
                     zone=item.zone,
                     turn_options=_turn_options(item.turn),
+                    is_night=window.is_night,
                 )
             )
 

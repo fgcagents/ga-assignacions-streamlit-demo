@@ -22,7 +22,6 @@ from planificador_cp_sat.services.esquema_planificacio import (
     migrate_planning_schema,
 )
 from planificador_cp_sat.services.persistencia_planificacio import (
-    PlanningExecutionPersistenceError,
     PlanningExecutionStaleError,
     StoredPlanningExecution,
     discard_planning_execution,
@@ -41,6 +40,12 @@ from planificador_cp_sat.services.planificacio_selectiva import (
     revoke_preassignment,
     save_preassignments,
 )
+from planificador_cp_sat.solver_engines import (
+    PUBLISHABLE_SOLVER_STATUSES,
+    SolverEngine,
+    normalize_solver_engine,
+    solver_engine_label,
+)
 
 
 RESULT_KEY = "resultat_planificacio_inicial_cp_sat"
@@ -48,6 +53,13 @@ EXECUTION_ID_KEY = "planificacio_execucio_id"
 NOTICE_KEY = "planificacio_notice"
 STALE_KEY = "planificacio_obsoleta"
 SELECTIVE_PREVIEW_KEY = "planificacio_selectiva_previsualitzacio"
+WORKSPACE_VIEW_KEY = "planificacio_espai_treball"
+WORKSPACE_VIEW_OVERRIDE_KEY = "planificacio_espai_treball_seguent"
+SCOPE_REVIEW_KEY = "planificacio_abast_revisat"
+
+VIEW_NEW_PROPOSAL = "Nova proposta"
+VIEW_SAVED_PROPOSALS = "Revisar propostes"
+VIEW_PREASSIGNMENTS = "Preassignacions"
 
 
 def _coverage_limits(db_path: str | Path) -> tuple[date, date]:
@@ -791,8 +803,9 @@ def _render_selective_planning(
     worker_names = dict(options["workers"])
     default_end = min(maximum, minimum + timedelta(days=30))
     with st.expander(
-        "Fixar assignacions per endavant",
+        "Gestionar preassignacions",
         icon=":material/lock_clock:",
+        expanded=True,
     ):
         st.caption(
             "Crea preassignacions a partir de cobertura abans de calcular el "
@@ -1139,7 +1152,15 @@ def _render_incremental_actions(
     assessment = getattr(execution, "metrics", {}).get(
         "equity_assessment", {}
     )
+    solver_status = getattr(execution, "solver_status", "OPTIMAL")
+    publishable = solver_status in PUBLISHABLE_SOLVER_STATUSES
+    optimality_certified = assessment.get("technical_ready", False)
     if execution.state == "esborrany":
+        if publishable and not optimality_certified:
+            st.warning(
+                "La proposta és factible però no acredita l'optimalitat. "
+                "Es pot validar i, després, publicar sota aquesta condició."
+            )
         confirmed = st.checkbox(
             "Confirmo que he revisat els canvis i els descoberts",
             key=f"planning_validate_confirm_{execution.id}",
@@ -1148,7 +1169,7 @@ def _render_incremental_actions(
             "Validar proposta",
             type="primary",
             icon=":material/check_circle:",
-            disabled=not confirmed,
+            disabled=not confirmed or not publishable,
             key=f"planning_validate_{execution.id}",
         ):
             try:
@@ -1163,20 +1184,34 @@ def _render_incremental_actions(
                 st.error(str(error))
 
     if execution.state == "validada":
+        if publishable and not optimality_certified:
+            st.warning(
+                "Resultat FEASIBLE: compleix les restriccions dures, però "
+                "el solver no ha demostrat que sigui la millor solució."
+            )
         if not rollout.publication_enabled:
             st.info(
                 "Mode ombra actiu: pots revisar i validar la proposta, però "
                 "la publicació està desactivada."
             )
         confirmed = st.checkbox(
-            "Confirmo que vull publicar exclusivament aquests canvis",
+            (
+                "Confirmo que vull publicar aquest resultat FEASIBLE i "
+                "accepto que no s'ha demostrat l'optimalitat"
+                if solver_status == "FEASIBLE"
+                else "Confirmo que vull publicar exclusivament aquests canvis"
+            ),
             key=f"planning_publish_confirm_{execution.id}",
         )
         if st.button(
             "Publicar canvis",
             type="primary",
             icon=":material/publish:",
-            disabled=not confirmed or not rollout.publication_enabled,
+            disabled=(
+                not confirmed
+                or not rollout.publication_enabled
+                or not publishable
+            ),
             key=f"planning_publish_{execution.id}",
         ):
             try:
@@ -1234,11 +1269,19 @@ def _render_incremental_execution(
 ) -> None:
     stale_message = st.session_state.get(STALE_KEY)
     view = _execution_presentation(execution, stale_message=stale_message)
+    selected_engine = normalize_solver_engine(
+        execution.configuration.get("solver_engine", SolverEngine.CURRENT)
+    )
     st.subheader(f"Revisió P-{execution.id}")
     st.caption(
         f"{_data_llegible(execution.request.scope.start_date)} – "
         f"{_data_llegible(execution.request.scope.end_date)} · "
-        f"{view['state_label']}"
+        f"{view['state_label']} · "
+        f"Motor: {solver_engine_label(selected_engine)}"
+    )
+    st.badge(
+        f"Solver {execution.solver_status}",
+        color="green" if execution.solver_status == "OPTIMAL" else "orange",
     )
     scope_details = []
     if execution.request.scope.service_ids:
@@ -1274,14 +1317,20 @@ def _render_incremental_execution(
         f"{float(shadow['wall_time_seconds'] or 0):.2f} s"
     )
     equity_assessment = view["equity_assessment"]
-    if equity_assessment.get("publishable", False) and not equity_assessment.get(
-        "review_worker_ids", ()
-    ):
-        st.success(
-            "Equitat contractual avaluada. La referència del 75% s'ha usat "
-            "com a criteri secundari després de maximitzar la cobertura."
-        )
-    elif equity_assessment.get("publishable", False):
+    optimality_certified = equity_assessment.get("technical_ready", False)
+    if optimality_certified and not equity_assessment.get("review_worker_ids", ()):
+        if selected_engine is SolverEngine.PRIORITY:
+            st.success(
+                "Totes les fases del motor per prioritats han acabat en estat "
+                "òptim."
+            )
+        else:
+            st.success(
+                "Equitat contractual avaluada. La referència del 75% s'ha "
+                "usat com a criteri secundari després de maximitzar la "
+                "cobertura."
+            )
+    elif optimality_certified:
         workers = ", ".join(equity_assessment.get("review_worker_ids", ()))
         affected = f" Treballadors destacats: {workers}." if workers else ""
         st.warning(
@@ -1293,69 +1342,10 @@ def _render_incremental_execution(
         reasons = ", ".join(
             equity_assessment.get("reasons", ["avaluació no disponible"])
         )
-        st.error(
-            "La proposta no és publicable per errors de factibilitat o "
-            f"validació ({reasons})."
+        st.warning(
+            "Resultat factible i publicable, però sense optimalitat "
+            f"demostrada ({reasons})."
         )
-    diagnostics = view["equity_diagnostics"]
-    if diagnostics:
-        comparable = [item for item in diagnostics if item.get("comparable")]
-        with st.expander(
-            "Diagnòstic justificable per treballador",
-            icon=":material/balance:",
-        ):
-            st.caption(
-                "L'equitat compara exclusivament el grup T. L'objectiu base "
-                "és el 75% de 1.605 hores i només s'ajusta proporcionalment "
-                "per les absències pròpies de cada treballador."
-            )
-            st.dataframe(
-                [
-                    {
-                        "Treballador": item.get("worker_id"),
-                        "% objectiu ajustat": round(
-                            float(item.get("completion_rate_permille", 0)) / 10,
-                            1,
-                        ),
-                        "Objectiu base T (h)": round(
-                            float(item.get("base_target_minutes", 0)) / 60,
-                            1,
-                        ),
-                        "Sostre (h)": round(
-                            float(item.get("maximum_minutes", 0)) / 60,
-                            1,
-                        ),
-                        "Diferència vs. grup (pp)": round(
-                            float(item.get("peer_gap_permille", 0)) / 10,
-                            1,
-                        ),
-                        "Hores acumulades": round(
-                            float(item.get("annual_minutes", 0)) / 60, 1
-                        ),
-                        "Objectiu ajustat (h)": round(
-                            float(item.get("adjusted_target_minutes", 0)) / 60,
-                            1,
-                        ),
-                        "Dies de baixa": item.get("absence_days", 0),
-                        "Capacitat compatible (h)": round(
-                            float(item.get("compatible_opportunity_minutes", 0))
-                            / 60,
-                            1,
-                        ),
-                        "Revisió": item.get("review_status"),
-                        "Justificació": ", ".join(
-                            item.get("justification_codes", [])
-                        ),
-                    }
-                    for item in diagnostics
-                ],
-                hide_index=True,
-                width="stretch",
-            )
-            st.caption(
-                f"{len(comparable)} de {len(diagnostics)} treballadors formen "
-                "part de la comparació central."
-            )
     if view["stale_message"]:
         st.error(view["stale_message"], icon=":material/update_disabled:")
     elif execution.state == "publicada":
@@ -1370,33 +1360,38 @@ def _render_incremental_execution(
         st.metric("Eliminades", view["removals"], border=True)
         st.metric("Descobertes", view["uncovered"], border=True)
 
-    st.markdown("#### Comparació abans/després")
-    if view["comparison"]:
-        st.dataframe(
-            pd.DataFrame(view["comparison"]),
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Data": st.column_config.DateColumn(
-                    "Data",
-                    format="DD/MM/YYYY",
-                )
-            },
-        )
-    else:
-        st.success("La proposta conserva tot el pla vigent: zero canvis.")
+    changes_tab, uncovered_tab, impact_tab = st.tabs(
+        ["Canvis", "Descoberts", "Impacte i equitat"]
+    )
+    with changes_tab:
+        if view["comparison"]:
+            st.dataframe(
+                pd.DataFrame(view["comparison"]),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Data": st.column_config.DateColumn(
+                        "Data",
+                        format="DD/MM/YYYY",
+                    )
+                },
+            )
+        else:
+            st.success("La proposta conserva tot el pla vigent: zero canvis.")
 
-    if view["uncovered_details"]:
-        with st.container(border=True):
-            st.markdown("**Necessitats descobertes**")
+    with uncovered_tab:
+        if view["uncovered_details"]:
             st.dataframe(
                 pd.DataFrame(view["uncovered_details"])[["need_id", "reason"]]
                 .rename(columns={"need_id": "Necessitat", "reason": "Motiu"}),
                 hide_index=True,
                 width="stretch",
             )
-    if view["worker_impact"]:
-        with st.container(border=True):
+        else:
+            st.success("No hi ha necessitats descobertes.")
+
+    with impact_tab:
+        if view["worker_impact"]:
             st.markdown("**Impacte per treballador**")
             st.dataframe(
                 pd.DataFrame(view["worker_impact"]),
@@ -1409,7 +1404,204 @@ def _render_incremental_execution(
                     )
                 },
             )
+        else:
+            st.info("La proposta no modifica la càrrega de cap treballador.")
+
+        diagnostics = view["equity_diagnostics"]
+        if diagnostics:
+            comparable = [item for item in diagnostics if item.get("comparable")]
+            with st.expander(
+                "Diagnòstic justificable per treballador",
+                icon=":material/balance:",
+            ):
+                st.caption(
+                    "L'equitat compara exclusivament el grup T. L'objectiu base "
+                    "és el 75% de 1.605 hores i només s'ajusta proporcionalment "
+                    "per les absències pròpies de cada treballador."
+                )
+                st.dataframe(
+                    [
+                        {
+                            "Treballador": item.get("worker_id"),
+                            "% objectiu ajustat": round(
+                                float(item.get("completion_rate_permille", 0)) / 10,
+                                1,
+                            ),
+                            "Objectiu base T (h)": round(
+                                float(item.get("base_target_minutes", 0)) / 60,
+                                1,
+                            ),
+                            "Sostre (h)": round(
+                                float(item.get("maximum_minutes", 0)) / 60,
+                                1,
+                            ),
+                            "Diferència vs. grup (pp)": round(
+                                float(item.get("peer_gap_permille", 0)) / 10,
+                                1,
+                            ),
+                            "Hores acumulades": round(
+                                float(item.get("annual_minutes", 0)) / 60, 1
+                            ),
+                            "Objectiu ajustat (h)": round(
+                                float(item.get("adjusted_target_minutes", 0)) / 60,
+                                1,
+                            ),
+                            "Dies de baixa": item.get("absence_days", 0),
+                            "Capacitat compatible (h)": round(
+                                float(
+                                    item.get("compatible_opportunity_minutes", 0)
+                                )
+                                / 60,
+                                1,
+                            ),
+                            "Revisió": item.get("review_status"),
+                            "Justificació": ", ".join(
+                                item.get("justification_codes", [])
+                            ),
+                        }
+                        for item in diagnostics
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+                st.caption(
+                    f"{len(comparable)} de {len(diagnostics)} treballadors "
+                    "formen part de la comparació central."
+                )
+
+    st.markdown("#### Decisió")
     _render_incremental_actions(db_path, execution)
+
+
+def _planning_execution_rows(executions: list[StoredPlanningExecution]) -> list[dict]:
+    return [
+        {
+            "Proposta": f"P-{item.id}",
+            "Estat": _execution_presentation(item)["state_label"],
+            "Motor": solver_engine_label(
+                item.configuration.get("solver_engine", SolverEngine.CURRENT)
+            ),
+            "Inici": item.request.scope.start_date,
+            "Final": item.request.scope.end_date,
+            "Conservades": item.unchanged_assignments,
+            "Canvis": item.persistent_changes,
+            "Descobertes": item.uncovered_needs,
+        }
+        for item in executions
+    ]
+
+
+def _render_saved_proposals(
+    db_path: str | Path,
+    executions: list[StoredPlanningExecution],
+) -> None:
+    execution_id = st.session_state.get(EXECUTION_ID_KEY)
+    if execution_id is not None:
+        if st.button(
+            "Tornar a la llista",
+            icon=":material/arrow_back:",
+            type="tertiary",
+            key="planning_close_execution",
+        ):
+            st.session_state.pop(EXECUTION_ID_KEY, None)
+            st.session_state.pop(STALE_KEY, None)
+            st.rerun()
+        try:
+            execution = load_planning_execution(db_path, int(execution_id))
+        except (sqlite3.Error, ValueError) as error:
+            st.error(str(error))
+        else:
+            _render_incremental_execution(db_path, execution)
+        return
+
+    st.subheader("Revisar propostes")
+    st.caption(
+        "Obre una proposta pendent per validar-la o consulta l'històric de "
+        "publicacions i descartaments."
+    )
+    if not executions:
+        st.info("Encara no hi ha cap proposta incremental desada.")
+        return
+
+    pending = [
+        item
+        for item in executions
+        if item.state not in {"descartada", "publicada", "revertida"}
+    ]
+    history = [item for item in executions if item not in pending]
+    if pending:
+        st.markdown("**Pendents**")
+        st.dataframe(
+            pd.DataFrame(_planning_execution_rows(pending)),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.success("No hi ha propostes pendents de decisió.")
+
+    if history:
+        with st.expander(
+            f"Històric ({len(history)})",
+            icon=":material/history:",
+        ):
+            st.dataframe(
+                pd.DataFrame(_planning_execution_rows(history)),
+                hide_index=True,
+                width="stretch",
+            )
+
+    execution_by_id = {item.id: item for item in executions}
+    ordered_ids = [item.id for item in pending] + [item.id for item in history]
+    selected_id = st.selectbox(
+        "Proposta que vols obrir",
+        ordered_ids,
+        index=None,
+        placeholder="Selecciona una proposta",
+        format_func=lambda item_id: (
+            f"P-{item_id} · "
+            f"{_execution_presentation(execution_by_id[item_id])['state_label']}"
+        ),
+        key="planning_saved_execution_id",
+    )
+    if st.button(
+        "Obrir proposta",
+        icon=":material/visibility:",
+        type="primary",
+        disabled=selected_id is None,
+        key="planning_open_execution",
+    ):
+        st.session_state[EXECUTION_ID_KEY] = int(selected_id)
+        st.session_state.pop(STALE_KEY, None)
+        st.rerun()
+
+
+def _scope_review_payload(
+    *,
+    start: date,
+    end: date,
+    worker_ids: list[str],
+    service_ids: list[str],
+    assignment_ids: list[int],
+    freeze_until: date | None,
+    allow_unselected_recipients: bool,
+    time_limit: float,
+    num_workers: int,
+    force_seeds: bool,
+    solver_engine: SolverEngine | str,
+) -> dict:
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "worker_ids": list(worker_ids),
+        "service_ids": list(service_ids),
+        "assignment_ids": [int(item) for item in assignment_ids],
+        "freeze_until": freeze_until.isoformat() if freeze_until else None,
+        "allow_unselected_recipients": allow_unselected_recipients,
+        "time_limit": float(time_limit),
+        "num_workers": int(num_workers),
+        "force_seeds": bool(force_seeds),
+        "solver_engine": normalize_solver_engine(solver_engine).value,
+    }
 
 
 def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
@@ -1435,75 +1627,63 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
             icon=":material/publish:",
             color="green",
         )
+
+    view_override = st.session_state.pop(WORKSPACE_VIEW_OVERRIDE_KEY, None)
+    if view_override is not None:
+        st.session_state[WORKSPACE_VIEW_KEY] = view_override
+    workspace_view = st.segmented_control(
+        "Què vols fer?",
+        (VIEW_NEW_PROPOSAL, VIEW_SAVED_PROPOSALS, VIEW_PREASSIGNMENTS),
+        default=VIEW_NEW_PROPOSAL,
+        required=True,
+        width="stretch",
+        key=WORKSPACE_VIEW_KEY,
+    )
+
     notice = st.session_state.pop(NOTICE_KEY, None)
     if notice:
         st.success(notice)
     try:
         migrate_planning_schema(db_path)
         executions = list_planning_executions(db_path)
-        minimum, maximum = _coverage_limits(db_path)
-        filter_options = _planning_filter_options(db_path, minimum, maximum)
-        selective_options = load_selective_planning_options(db_path)
     except (sqlite3.Error, ValueError) as error:
         st.error(f"No s'ha pogut preparar la planificació: {error}")
         return
 
-    execution_by_id = {item.id: item for item in executions}
-    with st.expander(
-        f"Propostes desades ({len(executions)})",
-        icon=":material/folder_open:",
-    ):
-        if not executions:
-            st.info("Encara no hi ha cap proposta incremental desada.")
-        else:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "Proposta": f"P-{item.id}",
-                            "Estat": _execution_presentation(item)["state_label"],
-                            "Inici": item.request.scope.start_date,
-                            "Final": item.request.scope.end_date,
-                            "Conservades": item.unchanged_assignments,
-                            "Canvis": item.persistent_changes,
-                            "Descobertes": item.uncovered_needs,
-                        }
-                        for item in executions
-                    ]
-                ),
-                hide_index=True,
-                width="stretch",
-            )
-            selected_id = st.selectbox(
-                "Proposta per revisar",
-                list(execution_by_id),
-                index=None,
-                placeholder="Selecciona una proposta",
-                format_func=lambda item_id: (
-                    "P-{} · {}".format(
-                        item_id,
-                        _execution_presentation(
-                            execution_by_id[item_id]
-                        )["state_label"],
-                    )
-                ),
-                key="planning_saved_execution_id",
-            )
-            if selected_id is not None and st.button(
-                "Obrir proposta",
-                icon=":material/visibility:",
-                key="planning_open_execution",
-            ):
-                st.session_state[EXECUTION_ID_KEY] = int(selected_id)
-                st.session_state.pop(STALE_KEY, None)
-                st.rerun()
+    if workspace_view == VIEW_SAVED_PROPOSALS:
+        _render_saved_proposals(db_path, executions)
+        return
 
-    _render_selective_planning(
-        db_path,
-        minimum,
-        maximum,
-        selective_options,
-    )
+    try:
+        minimum, maximum = _coverage_limits(db_path)
+    except (sqlite3.Error, ValueError) as error:
+        st.error(f"No s'ha pogut preparar la planificació: {error}")
+        return
+
+    if workspace_view == VIEW_PREASSIGNMENTS:
+        try:
+            selective_options = load_selective_planning_options(db_path)
+        except (sqlite3.Error, ValueError) as error:
+            st.error(f"No s'han pogut carregar les preassignacions: {error}")
+            return
+        st.subheader("Preassignacions")
+        st.caption(
+            "Fixa cobertures concretes perquè el pròxim càlcul les respecti. "
+            "Aquesta operació no publica ni modifica el pla vigent."
+        )
+        _render_selective_planning(
+            db_path,
+            minimum,
+            maximum,
+            selective_options,
+        )
+        return
+
+    try:
+        filter_options = _planning_filter_options(db_path, minimum, maximum)
+    except (sqlite3.Error, ValueError) as error:
+        st.error(f"No s'han pogut carregar els filtres: {error}")
+        return
 
     st.subheader("Generar una proposta")
     default_end = min(maximum, minimum + timedelta(days=30))
@@ -1533,10 +1713,22 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 max_value=maximum,
                 key="planning_end",
             )
+        solver_engine = st.segmented_control(
+            "Motor de planificació",
+            (SolverEngine.CURRENT.value, SolverEngine.PRIORITY.value),
+            default=SolverEngine.CURRENT.value,
+            required=True,
+            width="stretch",
+            format_func=solver_engine_label,
+            key="planning_solver_engine",
+            help=(
+                "El motor vigent conserva el comportament actual. El motor "
+                "nou aplica les prioritats acumulatives en paral·lel."
+            ),
+        )
         with st.expander(
-            "Límits de la proposta",
+            "Opcions de l'abast",
             icon=":material/filter_alt:",
-            expanded=True,
         ):
             st.markdown("**Assignacions que es poden revisar**")
             st.caption(
@@ -1603,25 +1795,20 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 recipient_scope == "Qualsevol persona elegible"
             )
         with st.expander("Configuració avançada", icon=":material/tune:"):
-            time_column, equity_column, workers_column = st.columns(3)
+            time_column, workers_column = st.columns(2)
             with time_column:
                 time_limit = st.number_input(
-                    "Temps per criteri (s)",
+                    "Temps total de replanificació (s)",
                     5,
                     300,
-                    60,
-                    step=5,
-                )
-            with equity_column:
-                equity_time = st.number_input(
-                    "Temps base d'equitat (s)",
-                    5,
-                    60,
-                    15,
+                    120,
                     step=5,
                     help=(
-                        "Temps per a l'equitat d'hores i per al desempat "
-                        "simple de canvis, sempre després de la cobertura."
+                        "Pressupost compartit per cobertura, estabilitat, "
+                        "serveis fora de preferència i equitat social. "
+                        "El motor vigent conserva els seus límits interns; "
+                        "el motor nou pot necessitar més temps en períodes "
+                        "llargs."
                     ),
                 )
             with workers_column:
@@ -1633,49 +1820,135 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                     step=1,
                 )
             force_seeds = st.checkbox("Cercar alternatives addicionals")
-        generate = st.form_submit_button(
+        review_scope = st.form_submit_button(
+            "Revisar abast",
+            type="primary",
+            icon=":material/fact_check:",
+            width="stretch",
+        )
+
+    if review_scope:
+        validation_error = None
+        if start > end:
+            validation_error = (
+                "La data d'inici no pot ser posterior a la data final."
+            )
+        elif freeze_until is not None and not (start <= freeze_until <= end):
+            validation_error = (
+                "La data de congelació ha de quedar dins del rang seleccionat."
+            )
+        else:
+            assignments_outside_range = [
+                assignment_id
+                for assignment_id in assignment_ids
+                if not (
+                    start
+                    <= date.fromisoformat(assignment_by_id[assignment_id]["data"])
+                    <= end
+                )
+            ]
+            if assignments_outside_range:
+                validation_error = (
+                    "Totes les assignacions seleccionades han de quedar dins "
+                    "del rang de dates."
+                )
+        if validation_error:
+            st.session_state.pop(SCOPE_REVIEW_KEY, None)
+            st.error(validation_error)
+        else:
+            st.session_state[SCOPE_REVIEW_KEY] = _scope_review_payload(
+                start=start,
+                end=end,
+                worker_ids=worker_ids,
+                service_ids=service_ids,
+                assignment_ids=assignment_ids,
+                freeze_until=freeze_until,
+                allow_unselected_recipients=allow_unselected_recipients,
+                time_limit=time_limit,
+                num_workers=num_workers,
+                force_seeds=force_seeds,
+                solver_engine=solver_engine,
+            )
+            st.rerun()
+
+    reviewed_scope = st.session_state.get(SCOPE_REVIEW_KEY)
+    if not reviewed_scope:
+        st.info(
+            "Defineix el període i, si cal, ajusta les opcions. Després "
+            "revisa l'abast abans d'executar el càlcul."
+        )
+        return
+
+    reviewed_start = date.fromisoformat(reviewed_scope["start"])
+    reviewed_end = date.fromisoformat(reviewed_scope["end"])
+    reviewed_freeze = (
+        date.fromisoformat(reviewed_scope["freeze_until"])
+        if reviewed_scope["freeze_until"]
+        else None
+    )
+    scope_summary = _scope_plan_summary(
+        db_path,
+        reviewed_start,
+        reviewed_end,
+        worker_ids=tuple(reviewed_scope["worker_ids"]),
+        service_ids=tuple(reviewed_scope["service_ids"]),
+        assignment_ids=tuple(reviewed_scope["assignment_ids"]),
+        freeze_until=reviewed_freeze,
+    )
+    with st.container(border=True):
+        st.markdown("#### Abast preparat")
+        st.caption(
+            f"{_data_llegible(reviewed_start)} – "
+            f"{_data_llegible(reviewed_end)}. El càlcul utilitzarà exactament "
+            "aquesta configuració revisada. "
+            f"Motor: **{solver_engine_label(reviewed_scope.get('solver_engine', SolverEngine.CURRENT))}**."
+        )
+        with st.container(horizontal=True):
+            st.metric(
+                "Necessitats",
+                scope_summary["coverage_needs"],
+                border=True,
+            )
+            st.metric(
+                "Modificables",
+                scope_summary["modifiable_assignments"],
+                border=True,
+            )
+            st.metric(
+                "Protegides",
+                max(
+                    0,
+                    scope_summary["active_assignments"]
+                    - scope_summary["modifiable_assignments"],
+                ),
+                border=True,
+            )
+        with st.expander("Veure el detall de l'abast"):
+            _render_scope_plan_summary(scope_summary)
+        generate = st.button(
             "Generar proposta",
             type="primary",
             icon=":material/play_arrow:",
             width="stretch",
+            key="planning_generate_reviewed_scope",
         )
-
-    if start > end:
-        st.error("La data d'inici no pot ser posterior a la data final.")
-        return
-    if freeze_until is not None and not (start <= freeze_until <= end):
-        st.error(
-            "La data de congelació ha de quedar dins del rang seleccionat."
-        )
-        return
-    assignments_outside_range = [
-        assignment_id
-        for assignment_id in assignment_ids
-        if not (
-            start
-            <= date.fromisoformat(assignment_by_id[assignment_id]["data"])
-            <= end
-        )
-    ]
-    if assignments_outside_range:
-        st.error(
-            "Totes les assignacions seleccionades han de quedar dins del "
-            "rang de dates."
-        )
-        return
-    _render_scope_plan_summary(
-        _scope_plan_summary(
-            db_path,
-            start,
-            end,
-            worker_ids=tuple(worker_ids),
-            service_ids=tuple(service_ids),
-            assignment_ids=tuple(assignment_ids),
-            freeze_until=freeze_until,
-        )
-    )
 
     if generate:
+        start = reviewed_start
+        end = reviewed_end
+        worker_ids = reviewed_scope["worker_ids"]
+        service_ids = reviewed_scope["service_ids"]
+        assignment_ids = reviewed_scope["assignment_ids"]
+        freeze_until = reviewed_freeze
+        allow_unselected_recipients = reviewed_scope[
+            "allow_unselected_recipients"
+        ]
+        time_limit = reviewed_scope["time_limit"]
+        num_workers = reviewed_scope["num_workers"]
+        force_seeds = reviewed_scope["force_seeds"]
+        solver_engine = reviewed_scope.get(
+            "solver_engine", SolverEngine.CURRENT.value
+        )
         try:
             from cp_sat_pilot import SolverConfig
             from planificador_cp_sat.domain import (
@@ -1713,34 +1986,18 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                     prepared,
                     config=SolverConfig(
                         max_time_seconds=float(time_limit),
-                        equity_time_seconds=float(equity_time),
                         num_workers=int(num_workers),
                         random_seed=0,
                     ),
                     seeds=(0, 1, 2),
                     force_all_seeds=force_seeds,
+                    solver_engine=solver_engine,
                 )
                 execution_id = save_planning_proposal(db_path, proposal)
             st.session_state[EXECUTION_ID_KEY] = execution_id
+            st.session_state[WORKSPACE_VIEW_OVERRIDE_KEY] = VIEW_SAVED_PROPOSALS
+            st.session_state.pop(SCOPE_REVIEW_KEY, None)
             st.session_state.pop(STALE_KEY, None)
             st.rerun()
         except (sqlite3.Error, ValueError) as error:
             st.error(str(error))
-
-    execution_id = st.session_state.get(EXECUTION_ID_KEY)
-    if execution_id is not None:
-        try:
-            execution = load_planning_execution(db_path, int(execution_id))
-        except (sqlite3.Error, ValueError) as error:
-            st.error(str(error))
-        else:
-            if st.button(
-                "Tancar proposta",
-                icon=":material/close:",
-                type="tertiary",
-                key="planning_close_execution",
-            ):
-                st.session_state.pop(EXECUTION_ID_KEY, None)
-                st.session_state.pop(STALE_KEY, None)
-                st.rerun()
-            _render_incremental_execution(db_path, execution)

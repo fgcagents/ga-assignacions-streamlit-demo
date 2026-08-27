@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Iterable
 
-from cp_sat_pilot import Assignment, CpSatPlanner, Need, SolveResult, SolverConfig
+from cp_sat_pilot import (
+    Assignment,
+    Need,
+    PlanningProblem,
+    SolveResult,
+    SolverConfig,
+)
 from cp_sat_pilot.functional_validation import analyze_functional_result
 from cp_sat_pilot.multistart import (
     MultiStartSelection,
@@ -17,10 +23,19 @@ from cp_sat_pilot.multistart import (
 from planificador_cp_sat.services.preparacio_planificacio import (
     PreparedPlanningProblem,
 )
+from planificador_cp_sat.solver_engines import (
+    SolverEngine,
+    create_planner,
+    normalize_solver_engine,
+)
 
 
 class PlanningProposalGenerationError(ValueError):
     """Indica que el solver no ha produït una proposta utilitzable."""
+
+
+class PlanningProposalRegressionError(PlanningProposalGenerationError):
+    """Indica que una replanificació empitjora la solució de referència."""
 
 
 class PlanningChangeKind(StrEnum):
@@ -93,6 +108,7 @@ class PlanningProposal:
     solver_config: SolverConfig | None = None
     requested_seeds: tuple[int, ...] = ()
     force_all_seeds: bool = False
+    solver_engine: SolverEngine = SolverEngine.CURRENT
 
     @property
     def result(self) -> SolveResult:
@@ -145,6 +161,28 @@ class PlanningProposal:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ReplanningSafetyComparison:
+    """Compara una replanificació amb conservar el pla no afectat."""
+
+    baseline_covered: int
+    candidate_covered: int
+    baseline_changes: int
+    candidate_changes: int
+    newly_uncovered_unaffected: frozenset[str]
+
+    @property
+    def is_safe(self) -> bool:
+        if self.newly_uncovered_unaffected:
+            return False
+        if self.candidate_covered < self.baseline_covered:
+            return False
+        return not (
+            self.candidate_covered == self.baseline_covered
+            and self.candidate_changes > self.baseline_changes
+        )
+
+
 def _indexed_assignments(
     assignments: Iterable[Assignment],
     *,
@@ -159,6 +197,65 @@ def _indexed_assignments(
             )
         indexed[assignment.need_id] = assignment
     return indexed
+
+
+def compare_replanning_with_baseline(
+    problem: PlanningProblem,
+    assignments: Iterable[Assignment],
+) -> ReplanningSafetyComparison:
+    """Aplica la regla: cap reparació pot ser pitjor que no replanificar."""
+    references = _indexed_assignments(
+        problem.reference_assignments,
+        label="El pla de referència",
+    )
+    proposed = _indexed_assignments(assignments, label="La replanificació")
+    known_need_ids = {need.id for need in problem.needs}
+    unknown = set(proposed) - known_need_ids
+    if unknown:
+        raise PlanningProposalRegressionError(
+            "La replanificació conté necessitats desconegudes: "
+            + ", ".join(sorted(unknown))
+        )
+
+    affected = set(problem.affected_need_ids)
+    baseline_need_ids = set(references) - affected
+    newly_uncovered = baseline_need_ids - set(proposed)
+    all_need_ids = set(references) | set(proposed)
+    candidate_changes = sum(
+        (
+            references[need_id].worker_id if need_id in references else None
+        )
+        != (proposed[need_id].worker_id if need_id in proposed else None)
+        for need_id in all_need_ids
+    )
+    return ReplanningSafetyComparison(
+        baseline_covered=len(baseline_need_ids),
+        candidate_covered=len(proposed),
+        baseline_changes=len(set(references) & affected),
+        candidate_changes=candidate_changes,
+        newly_uncovered_unaffected=frozenset(newly_uncovered),
+    )
+
+
+def validate_replanning_against_baseline(
+    problem: PlanningProblem,
+    assignments: Iterable[Assignment],
+) -> ReplanningSafetyComparison:
+    comparison = compare_replanning_with_baseline(problem, assignments)
+    if comparison.is_safe:
+        return comparison
+    details = ""
+    if comparison.newly_uncovered_unaffected:
+        details = "; serveis no afectats descoberts: " + ", ".join(
+            sorted(comparison.newly_uncovered_unaffected)
+        )
+    raise PlanningProposalRegressionError(
+        "La replanificació empitjora la solució base "
+        f"({comparison.candidate_covered} cobertes davant de "
+        f"{comparison.baseline_covered}; "
+        f"{comparison.candidate_changes} canvis davant de "
+        f"{comparison.baseline_changes}){details}"
+    )
 
 
 def _uncovered_diagnostics(
@@ -183,6 +280,7 @@ def planning_proposal_from_result(
     solver_config: SolverConfig | None = None,
     requested_seeds: tuple[int, ...] = (),
     force_all_seeds: bool = False,
+    solver_engine: SolverEngine | str = SolverEngine.CURRENT,
 ) -> PlanningProposal:
     """Compara una solució vàlida amb la fotografia que l'ha originada."""
     if not isinstance(prepared, PreparedPlanningProblem):
@@ -302,6 +400,7 @@ def planning_proposal_from_result(
         solver_config=solver_config,
         requested_seeds=requested_seeds,
         force_all_seeds=force_all_seeds,
+        solver_engine=normalize_solver_engine(solver_engine),
     )
 
 
@@ -311,20 +410,26 @@ def generate_planning_proposal(
     config: SolverConfig | None = None,
     seeds: Iterable[int] = (0, 1, 2),
     force_all_seeds: bool = False,
+    solver_engine: SolverEngine | str = SolverEngine.CURRENT,
 ) -> PlanningProposal:
     """Resol el problema preparat i retorna exclusivament canvis en memòria."""
     if not isinstance(prepared, PreparedPlanningProblem):
         raise TypeError("prepared ha de ser PreparedPlanningProblem")
     solver_config = config or SolverConfig(
-        max_time_seconds=60,
-        equity_time_seconds=15,
+        max_time_seconds=(
+            60 if prepared.problem.reference_assignments else 120
+        ),
+        equity_time_seconds=(
+            None if prepared.problem.reference_assignments else 75
+        ),
         num_workers=8,
         random_seed=0,
     )
     requested_seeds = tuple(dict.fromkeys(int(seed) for seed in seeds))
+    selected_engine = normalize_solver_engine(solver_engine)
     try:
         selection = solve_adaptive_multi_start(
-            CpSatPlanner(prepared.problem),
+            create_planner(prepared.problem, selected_engine),
             solver_config,
             requested_seeds,
             force_all_seeds=force_all_seeds,
@@ -337,4 +442,5 @@ def generate_planning_proposal(
         solver_config=solver_config,
         requested_seeds=requested_seeds,
         force_all_seeds=force_all_seeds,
+        solver_engine=selected_engine,
     )

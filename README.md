@@ -1,50 +1,52 @@
-# Prototip CP-SAT per a Streamlit Community Cloud
+# Planificador CP-SAT — Streamlit Demo Alfa 1
 
-> **Estat documental:** còpia sincronitzada el 20/08/2026 amb l’aplicació
-> multipàgina vigent, inclosos el resum, la planificació incremental, el pla
-> publicat, la gestió de personal i les incidències. El motor incorpora el
-> límit dur d'11 dies de treball consecutius. L'ordre de resolució és màxima
-> cobertura, estabilitat opcional, equitat d'hores del grup T i desempat simple
-> pel total de canvis de zona i torn. La referència contractual del grup T és
-> el 75% de 1.605 hores i només es prorrateja per les absències pròpies; no és
-> un mínim rígid ni s'amplia amb les baixes del grup A. Els diagnòstics es
-> mantenen com a informació posterior, sense fases addicionals, índex compost,
-> reintents dirigits ni portes d'aprovació manual.
+Còpia desplegable de l'aplicació multipàgina. Inclou resum, planificació
+incremental, pla publicat, hores realitzades, personal i incidències.
 
-Aquest directori és una còpia desplegable i independent del projecte de
-treball. Conté l'aplicació multipàgina, els serveis que utilitza i el paquet
-del solver CP-SAT.
+El formulari permet escollir entre el motor **Vigent** i **Nou per prioritats**.
+El motor nou resol restriccions dures, cobertura, minuts coberts, estabilitat,
+menys minuts acumulats, límit tou de ratxes fora de zona i preferències de
+torn i zona.
 
-## Seguretat de les dades
+## Mode del desplegament
 
-La base operativa `treballadors.db` no forma part d'aquest directori i no s'ha
-de publicar a GitHub.
+La demo arrenca per defecte amb:
 
-El projecte ja inclou una còpia pseudonimitzada amb aquesta ruta exacta:
+```powershell
+$env:PLANIFICACIO_INCREMENTAL_MODE = "active"
+$env:PLANIFICACIO_INCREMENTAL_PUBLICATION_ENABLED = "true"
+```
+
+Els valors s'apliquen amb `setdefault`, de manera que una variable externa pot
+desactivar-los. Cada sessió publica únicament sobre la seva còpia temporal.
+
+## Base de dades
+
+El repositori inclou només:
 
 ```text
 data/treballadors_demo.db
 ```
 
-S'ha generat amb identitats sintètiques, patrons funcionals coherents, dates
-desplaçades i estat operatiu buit. El procés i els controls es troben a
-[`data/ANONIMITZACIO.md`](data/ANONIMITZACIO.md). `.gitignore` bloqueja
-qualsevol altra base SQLite.
+La demo s'ha regenerat a partir de
+`treballadors_2025_absentisme_base.db`. Conserva el patró anual d'absentisme,
+descans, històric i cobertura, però substitueix les identitats i desplaça totes
+les dates uniformement.
 
-En iniciar l'aplicació, cada sessió rep una còpia temporal independent de la
-base demo. Per tant:
+La base original no s'inclou perquè conté camps identificatius i el repositori
+és públic. El procés està documentat a
+[`data/ANONIMITZACIO.md`](data/ANONIMITZACIO.md).
 
-- les proves d'un usuari no modifiquen el fitxer publicat;
+En iniciar l'aplicació, cada sessió rep una còpia temporal independent:
+
+- les publicacions i incidències no modifiquen el fitxer del repositori;
 - els canvis no es comparteixen entre sessions;
-- les publicacions, incidències i rollback són simulacions temporals;
-- les dades es poden perdre quan la sessió o el servidor es reinicien.
+- el rollback es pot provar dins de la mateixa sessió;
+- les dades temporals es poden perdre quan el servidor es reinicia.
 
-Aquest comportament és adequat per a demostració, però no per a producció.
-Streamlit Community Cloud no garanteix la persistència dels fitxers locals.
+Aquest comportament és adequat per a demostració, no per a producció.
 
 ## Execució local
-
-Amb Python 3.13:
 
 ```powershell
 python -m venv .venv
@@ -52,74 +54,33 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-També es pot provar temporalment amb una base externa sense copiar-la:
+Per provar una base externa:
 
 ```powershell
-$env:PLANIFICADOR_DATABASE_PATH = "C:\ruta\a\treballadors.db"
+$env:PLANIFICADOR_DATABASE_PATH = "C:\ruta\treballadors.db"
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-## Comprovació abans de publicar
-
-Sense exigir encara la base demo:
-
-```powershell
-python scripts\verify_deploy.py
-```
-
-Just abans de pujar el repositori:
+## Verificació abans de publicar
 
 ```powershell
 python scripts\verify_deploy.py --require-demo-data
 ```
 
-La comprovació valida l'estructura, compila tots els fitxers Python, comprova
-la integritat i el patró sintètic de la base, i rebutja bases, còpies de
-seguretat o resultats fora de la ruta demo autoritzada.
+El verificador comprova estructura, compilació, configuració `active`,
+integritat SQLite, identitats sintètiques i absència de bases no autoritzades.
 
-## Regeneració de la base demo
+## Regeneració de la demo
 
-Només cal regenerar-la quan canvia l'esquema o quan es vol actualitzar el joc
-de proves. Des de l'arrel d'aquest projecte:
+Des d'aquest directori:
 
 ```powershell
 python scripts\create_demo_database.py `
-  --source ..\treballadors.db `
+  --source ..\..\data\treballadors_2025_absentisme_base.db `
   --output data\treballadors_demo.db `
   --replace
 python scripts\verify_deploy.py --require-demo-data
 ```
 
-El generador obre l'original en mode de només lectura, crea primer un fitxer
-temporal i només substitueix la base demo si totes les validacions són
-correctes. No genera cap fitxer de correspondències.
-
-## Desplegament a Streamlit Community Cloud
-
-1. Creeu un repositori de GitHub amb el contingut d'aquesta carpeta com a
-   arrel.
-2. Afegiu només `data/treballadors_demo.db` després de pseudonimitzar-la i
-   revisar-la.
-3. Executeu la comprovació amb `--require-demo-data`.
-4. A Streamlit Community Cloud, seleccioneu el repositori i la branca.
-5. Indiqueu `streamlit_app.py` com a fitxer principal.
-6. A **Advanced settings**, seleccioneu Python 3.13, la mateixa versió amb què
-   s'ha validat localment.
-7. Desplegueu l'aplicació i reviseu les tres pantalles.
-
-Les dependències estan fixades a `requirements.txt`. Community Cloud instal·la
-les dependències d'aquest fitxer i torna a desplegar l'aplicació quan canvia el
-repositori.
-
-## Actualitzacions
-
-No s'han d'implementar funcionalitats directament en aquesta còpia. Els canvis
-es desenvolupen i validen al projecte de treball i només es promocionen aquí
-després de l'acceptació. El procediment complet es troba a
-[`PROTOCOL_ACTUALITZACIONS.md`](PROTOCOL_ACTUALITZACIONS.md).
-
-Documentació oficial:
-
-- https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy
-- https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies
-- https://docs.streamlit.io/develop/concepts/connections/connecting-to-data
+No s'ha de copiar mai la base original, backups, CSV de resultats ni fitxers
+que permetin reconstruir la correspondència de les identitats.

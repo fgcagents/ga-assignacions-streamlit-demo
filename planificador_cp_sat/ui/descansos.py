@@ -29,6 +29,9 @@ from planificador_cp_sat.services.descansos import (
     estadistiques_descansos,
     alertes_baixes_pendents,
 )
+from planificador_cp_sat.services.hores_realitzades import (
+    realized_hours_by_worker,
+)
 
 
 ETIQUETES_ORIGEN = {
@@ -124,6 +127,27 @@ def _seccio_consulta(db_path: str, treballadors: list[dict]) -> None:
         if any_consulta is None:
             st.info("Indica l'any que vols consultar.")
             return
+
+    if str(treballador.get("grup") or "").upper() == "T":
+        totals = realized_hours_by_worker(
+            db_path,
+            year=int(any_consulta) if any_consulta is not None else None,
+        )
+        worker_total = next(
+            (
+                item
+                for item in totals
+                if str(item["treballador_id"]) == str(treballador["id"])
+            ),
+            None,
+        )
+        hours = worker_total["hores_realitzades"] if worker_total else 0
+        label = (
+            f"Hores realitzades {int(any_consulta)}"
+            if any_consulta is not None
+            else "Total d'hores realitzades"
+        )
+        st.metric(label, f"{hours:.2f} h", border=True)
 
     moviments = moviments_treballador(db_path, treballador["id"], any_consulta)
     if prefix_data:

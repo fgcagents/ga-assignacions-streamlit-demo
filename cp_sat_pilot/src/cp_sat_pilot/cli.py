@@ -24,7 +24,7 @@ def _iso_date(value: str) -> date:
 def build_parser() -> argparse.ArgumentParser:
     repository_root = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(
-        description="Pilot CP-SAT de Fase 1, sense publicació a SQLite"
+        description="Planificador CP-SAT social, sense publicació a SQLite"
     )
     parser.add_argument(
         "--db",
@@ -39,8 +39,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("replace_all", "add_new_only"),
         default="replace_all",
     )
-    parser.add_argument("--time-limit", type=float, default=60.0)
-    parser.add_argument("--equity-time-limit", type=float, default=15.0)
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=120.0,
+        help="Pressupost total; màxim 120 s inicials o 60 s en replanificació",
+    )
+    parser.add_argument(
+        "--equity-time-limit",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -96,7 +106,6 @@ def main(argv: list[str] | None = None) -> int:
     planner = CpSatPlanner(problem)
     config = SolverConfig(
         max_time_seconds=args.time_limit,
-        equity_time_seconds=args.equity_time_limit,
         num_workers=args.workers,
         random_seed=args.seed,
         log_search_progress=args.solver_log,
@@ -154,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{selection.total_wall_time_seconds:.3f} s"
         )
 
-    print("PILOT CP-SAT — FASE 2")
+    print("PLANIFICADOR CP-SAT SOCIAL")
     print(f"Estat: {result.status}")
     print(f"Cobertura: {result.covered_needs}/{result.total_needs}")
     print(f"Variables candidates: {result.candidate_variables}")
@@ -207,6 +216,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"- Canvis de zona: {metrics.zone_changes}")
         print(f"- Canvis de torn: {metrics.turn_changes}")
         print(
+            "- Serveis fora de preferència: "
+            f"{metrics.outside_preference_services}"
+        )
+        print(
+            "- Màxim acumulat de serveis nocturns: "
+            f"{metrics.max_accumulated_night_services}"
+        )
+        print(
             "- Diferència anual màxima d'hores: "
             f"{metrics.annual_hours_range_minutes / 60:.2f} h"
         )
@@ -214,30 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             "- Penalització d'equitat d'hores anuals: "
             f"{metrics.annual_hours_equity_penalty}"
         )
-        print(
-            "- Penalització d'equitat acumulada de zona: "
-            f"{metrics.accumulated_zone_equity_penalty}"
-        )
-        print(
-            "- Diferència màxima de taxa acumulada de zona: "
-            f"{metrics.accumulated_zone_rate_range_permille / 10:.1f} punts percentuals"
-        )
-        print(
-            "- Penalització d'equitat acumulada de torn: "
-            f"{metrics.accumulated_turn_equity_penalty}"
-        )
-        print(
-            "- Diferència màxima de taxa acumulada de torn: "
-            f"{metrics.accumulated_turn_rate_range_permille / 10:.1f} punts percentuals"
-        )
-        print(
-            "- Pitjor diferència relativa entre taxes de canvi: "
-            f"{metrics.worst_change_equity_gap_permille / 10:.1f} %"
-        )
-        print(
-            "- Objectiu combinat d'equitat oportunista: "
-            f"{metrics.opportunistic_equity_objective}"
-        )
+        print(f"- Objectiu social: {metrics.social_objective}")
     if result.validation_errors:
         print("Errors del validador final:")
         for error in result.validation_errors:

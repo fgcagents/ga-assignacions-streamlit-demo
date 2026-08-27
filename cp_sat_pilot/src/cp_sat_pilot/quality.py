@@ -5,24 +5,20 @@ from dataclasses import dataclass
 from .domain import SolveResult
 
 
-SOLVED_PHASE_STATUSES = frozenset({"FEASIBLE", "OPTIMAL"})
+REQUIRED_PHASE_STATUS = "OPTIMAL"
 MAX_INFORMATIONAL_ALERT_SHARE_PERCENT = 25
 
 
 @dataclass(frozen=True, slots=True)
 class EquityExecutionAssessment:
-    """Resum informatiu de l'equitat calculada.
-
-    Aquesta avaluació no participa en la selecció de solucions, no provoca
-    reintents i no bloqueja la validació ni la publicació.
-    """
+    """Resum de factibilitat i del grau d'optimalitat assolit."""
 
     status: str
     publishable: bool
     operational_phase_status: str
     equity_phase_status: str
     reasons: tuple[str, ...]
-    principle: str = "referencia_contractual_75_diagnostic_no_bloquejant"
+    principle: str = "referencia_contractual_75_informativa"
     technical_ready: bool = False
     requires_manual_review: bool = False
     review_worker_ids: tuple[str, ...] = ()
@@ -46,24 +42,31 @@ def _phase_status(result: SolveResult, name: str) -> str:
 
 
 def assess_equity_execution(result: SolveResult) -> EquityExecutionAssessment:
-    """Descriu el resultat sense convertir les alertes en una porta."""
+    """Permet publicar solucions factibles i informa de l'optimalitat."""
 
     coverage_status = _phase_status(result, "cobertura")
-    equity_status = _phase_status(result, "equitat_hores_contractual")
-    changes_status = _phase_status(result, "desempat_canvis")
-    publishable = result.feasible and not result.validation_errors
-    technical_ready = publishable
+    hours_status = _phase_status(result, "hores_cobertes")
+    equity_status = _phase_status(result, "equitat_social")
     reasons: list[str] = []
-    if coverage_status not in SOLVED_PHASE_STATUSES:
+    if coverage_status != REQUIRED_PHASE_STATUS:
         reasons.append("cobertura_no_resolta")
-    if equity_status not in SOLVED_PHASE_STATUSES:
-        reasons.append("equitat_contractual_no_optimitzada")
-    if changes_status not in SOLVED_PHASE_STATUSES:
-        reasons.append("desempat_canvis_no_optimitzat")
+    if hours_status != REQUIRED_PHASE_STATUS:
+        reasons.append("hores_cobertes_no_optimitzades")
+    if equity_status != REQUIRED_PHASE_STATUS:
+        reasons.append("equitat_social_no_optimitzada")
     if result.soft_metrics is None:
         reasons.append("metriques_equitat_no_disponibles")
     if result.validation_errors:
         reasons.append("errors_restriccions_dures")
+    optimality_certified = (
+        result.feasible
+        and not result.validation_errors
+        and coverage_status == REQUIRED_PHASE_STATUS
+        and hours_status == REQUIRED_PHASE_STATUS
+        and equity_status == REQUIRED_PHASE_STATUS
+        and result.soft_metrics is not None
+    )
+    publishable = result.feasible and not result.validation_errors
 
     alert_worker_ids = tuple(
         sorted(
@@ -92,16 +95,18 @@ def assess_equity_execution(result: SolveResult) -> EquityExecutionAssessment:
     return EquityExecutionAssessment(
         status=(
             "no_factible"
-            if not publishable
+            if not result.feasible or result.validation_errors
+            else "factible_no_optima"
+            if not optimality_certified
             else "avaluada_amb_alertes"
-            if alert_worker_ids or equity_status not in SOLVED_PHASE_STATUSES
+            if alert_worker_ids
             else "avaluada"
         ),
         publishable=publishable,
-        operational_phase_status=changes_status,
+        operational_phase_status=hours_status,
         equity_phase_status=equity_status,
         reasons=tuple(reasons),
-        technical_ready=technical_ready,
+        technical_ready=optimality_certified,
         requires_manual_review=False,
         review_worker_ids=alert_worker_ids,
         review_reasons=(),

@@ -7,11 +7,14 @@ from .domain import (
     Need,
     OptimizationPhase,
     PlanningProblem,
+    SocialDiagnosticSummary,
     SolveResult,
     SoftMetrics,
     Worker,
+    is_night_interval,
 )
 from .model import CpSatPlanner, SoftObjectiveWeights, SolverConfig
+from .priority_planner import PriorityPlanner
 from .quality import EquityExecutionAssessment, assess_equity_execution
 from .multistart import (
     MultiStartCandidate,
@@ -44,6 +47,8 @@ __all__ = [
     "Need",
     "OptimizationPhase",
     "PlanningProblem",
+    "PriorityPlanner",
+    "SocialDiagnosticSummary",
     "SolveResult",
     "SoftObjectiveWeights",
     "SoftMetrics",
@@ -53,6 +58,7 @@ __all__ = [
     "StabilityAggregate",
     "StabilityRun",
     "Worker",
+    "is_night_interval",
     "aggregate_stability_runs",
     "assess_equity_execution",
     "apply_scenario",

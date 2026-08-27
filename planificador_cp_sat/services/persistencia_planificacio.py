@@ -15,8 +15,6 @@ from cp_sat_pilot import (
     Assignment,
     CpSatPlanner,
     PlanningProblem,
-    SolverConfig,
-    assess_equity_execution,
 )
 
 from planificador_cp_sat.domain import (
@@ -24,6 +22,7 @@ from planificador_cp_sat.domain import (
     PlanningInputAdjustments,
     PlanningScope,
     PlanningTrigger,
+    PlanningTriggerKind,
     ProtectionPolicy,
 )
 from planificador_cp_sat.services.esquema_planificacio import (
@@ -35,6 +34,12 @@ from planificador_cp_sat.services.preparacio_planificacio import (
 from planificador_cp_sat.services.proposta_planificacio import (
     PlanningChangeKind,
     PlanningProposal,
+    PlanningProposalRegressionError,
+    validate_replanning_against_baseline,
+)
+from planificador_cp_sat.solver_engines import (
+    PUBLISHABLE_SOLVER_STATUSES,
+    assess_solver_execution,
 )
 
 
@@ -249,6 +254,8 @@ def planning_problem_hash(problem: PlanningProblem) -> str:
                 "historical_assignments": worker.historical_assignments,
                 "historical_zone_changes": worker.historical_zone_changes,
                 "historical_turn_changes": worker.historical_turn_changes,
+                "historical_night_services": worker.historical_night_services,
+                "can_work_nights": worker.can_work_nights,
                 "annual_equity_target_minutes": (
                     worker.annual_equity_target_minutes
                 ),
@@ -280,6 +287,7 @@ def planning_problem_hash(problem: PlanningProblem) -> str:
                 "skills": sorted(need.required_skills),
                 "zone": need.zone,
                 "turn_options": sorted(need.turn_options),
+                "is_night": need.is_night,
             }
             for need in sorted(problem.needs, key=lambda item: item.id)
         ],
@@ -291,6 +299,7 @@ def planning_problem_hash(problem: PlanningProblem) -> str:
                 "duration_minutes": item.duration_minutes,
                 "zone_change": item.zone_change,
                 "turn_change": item.turn_change,
+                "is_night": item.is_night,
             }
             for item in sorted(
                 problem.history,
@@ -328,11 +337,15 @@ def _configuration_payload(proposal: PlanningProposal) -> dict:
         ),
         "seeds": list(proposal.requested_seeds),
         "force_all_seeds": proposal.force_all_seeds,
+        "solver_engine": proposal.solver_engine.value,
     }
 
 
 def _metrics_payload(proposal: PlanningProposal) -> dict:
-    equity_assessment = assess_equity_execution(proposal.result)
+    equity_assessment = assess_solver_execution(
+        proposal.result,
+        proposal.solver_engine,
+    )
     return {
         "soft_metrics": (
             asdict(proposal.result.soft_metrics)
@@ -344,6 +357,11 @@ def _metrics_payload(proposal: PlanningProposal) -> dict:
         "equity_diagnostics": [
             asdict(item) for item in proposal.result.equity_diagnostics
         ],
+        "social_diagnostic_summary": (
+            asdict(proposal.result.social_diagnostic_summary)
+            if proposal.result.social_diagnostic_summary
+            else None
+        ),
         "wall_time_seconds": proposal.result.wall_time_seconds,
         "candidates": [asdict(item) for item in proposal.selection.candidates],
         "uncovered": [
@@ -679,6 +697,11 @@ def validate_planning_execution(
                 raise PlanningExecutionPersistenceError(
                     "Només es pot validar una proposta en estat esborrany"
                 )
+            if stored.solver_status not in PUBLISHABLE_SOLVER_STATUSES:
+                raise PlanningExecutionPersistenceError(
+                    "No es pot validar la proposta: el solver no ha produït "
+                    "una solució factible utilitzable."
+                )
             try:
                 prepared = prepare_planning_problem(
                     database_path,
@@ -700,6 +723,14 @@ def validate_planning_execution(
                 prepared.problem,
                 stored.changes,
             )
+            if stored.request.trigger.kind is PlanningTriggerKind.INCIDENT:
+                try:
+                    validate_replanning_against_baseline(
+                        prepared.problem,
+                        final_assignments,
+                    )
+                except PlanningProposalRegressionError as error:
+                    raise PlanningExecutionPersistenceError(str(error)) from error
             errors = CpSatPlanner(prepared.problem).validate(final_assignments)
             if errors:
                 raise PlanningExecutionPersistenceError(

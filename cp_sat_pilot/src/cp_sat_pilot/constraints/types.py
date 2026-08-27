@@ -15,10 +15,10 @@ class SoftObjectiveWeights:
     friday_rule: int = 15
     preferred_assignment: int = 20
     annual_hours_balance: int = 4
-    accumulated_zone_equity: int = 3
+    accumulated_zone_equity: int = 1
     accumulated_turn_equity: int = 3
     zone_changes_tiebreak: int = 1
-    turn_changes_tiebreak: int = 1
+    turn_changes_tiebreak: int = 3
 
 
 @dataclass(slots=True)
@@ -54,3 +54,6 @@ class SoftComponents:
     change_tiebreak_penalty: cp_model.IntVar
     normalized_total_changes: cp_model.IntVar
     opportunistic_equity_objective: cp_model.IntVar
+    outside_preference_services: cp_model.IntVar
+    max_accumulated_night_services: cp_model.IntVar
+    social_objective: cp_model.IntVar

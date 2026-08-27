@@ -140,6 +140,74 @@ def _merge_boundary_history(
     return adjusted_workers, tuple(merged)
 
 
+def _remove_active_history_duplicates(
+    workers: tuple[Worker, ...],
+    history: tuple[HistoricalAssignment, ...],
+    references: tuple[Assignment, ...],
+) -> tuple[tuple[Worker, ...], tuple[HistoricalAssignment, ...]]:
+    """Evita que el pla actiu entri en conflicte amb la seva còpia històrica."""
+    active_keys = {
+        _history_key(
+            assignment.worker_id,
+            assignment.start,
+            assignment.end,
+            assignment.duration_minutes,
+        )
+        for assignment in references
+    }
+    kept: list[HistoricalAssignment] = []
+    removed_minutes: dict[str, int] = {}
+    removed_counts: dict[str, int] = {}
+    removed_zone_changes: dict[str, int] = {}
+    removed_turn_changes: dict[str, int] = {}
+    for item in history:
+        key = _history_key(
+            item.worker_id,
+            item.start,
+            item.end,
+            item.duration_minutes,
+        )
+        if key not in active_keys:
+            kept.append(item)
+            continue
+        removed_minutes[item.worker_id] = (
+            removed_minutes.get(item.worker_id, 0) + item.duration_minutes
+        )
+        removed_counts[item.worker_id] = removed_counts.get(item.worker_id, 0) + 1
+        removed_zone_changes[item.worker_id] = (
+            removed_zone_changes.get(item.worker_id, 0) + int(item.zone_change)
+        )
+        removed_turn_changes[item.worker_id] = (
+            removed_turn_changes.get(item.worker_id, 0) + int(item.turn_change)
+        )
+
+    adjusted_workers = tuple(
+        replace(
+            worker,
+            annual_minutes=max(
+                0,
+                worker.annual_minutes - removed_minutes.get(worker.id, 0),
+            ),
+            historical_assignments=max(
+                0,
+                worker.historical_assignments - removed_counts.get(worker.id, 0),
+            ),
+            historical_zone_changes=max(
+                0,
+                worker.historical_zone_changes
+                - removed_zone_changes.get(worker.id, 0),
+            ),
+            historical_turn_changes=max(
+                0,
+                worker.historical_turn_changes
+                - removed_turn_changes.get(worker.id, 0),
+            ),
+        )
+        for worker in workers
+    )
+    return adjusted_workers, tuple(kept)
+
+
 def _selected_needs(
     snapshot: PlanningSnapshot,
     request: PlanningExecutionRequest,
@@ -344,6 +412,11 @@ def prepare_planning_problem(
         base_problem.workers,
         base_problem.history,
         current_snapshot.boundary_assignments,
+    )
+    workers, history = _remove_active_history_duplicates(
+        workers,
+        history,
+        references,
     )
 
     released = request.adjustments.released_worker_dates

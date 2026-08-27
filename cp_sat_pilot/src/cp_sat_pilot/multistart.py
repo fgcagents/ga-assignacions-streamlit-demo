@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from time import monotonic
 from typing import Iterable
 
 from .domain import SolveResult
@@ -22,6 +23,7 @@ class MultiStartCandidate:
     status: str
     validation_errors: int
     covered_needs: int
+    covered_minutes: int
     total_needs: int
     coverage_phase_status: str
     coverage_phase_gap: float | None
@@ -40,6 +42,9 @@ class MultiStartCandidate:
     annual_fairness_objective: int | None
     change_fairness_objective: int | None
     change_tiebreak_penalty: int | None
+    outside_preference_services: int | None
+    social_objective: int | None
+    max_accumulated_night_services: int | None
     plan_alterations: int | None
     opportunistic_equity_objective: int | None
     annual_hours_range: float | None
@@ -102,28 +107,31 @@ def summarize_candidate(
 ) -> MultiStartCandidate:
     metrics = result.soft_metrics
     stability_status = _phase_status(result, "estabilitat_pla")
-    equity_status = _phase_status(result, "equitat_hores_contractual")
-    changes_status = _phase_status(result, "desempat_canvis")
+    hours_status = _phase_status(result, "hores_cobertes")
+    equity_status = _phase_status(result, "equitat_social")
     return MultiStartCandidate(
         seed=seed,
         feasible=result.feasible,
         status=result.status,
         validation_errors=len(result.validation_errors),
         covered_needs=result.covered_needs,
+        covered_minutes=sum(
+            assignment.duration_minutes for assignment in result.assignments
+        ),
         total_needs=result.total_needs,
         coverage_phase_status=_phase_status(result, "cobertura"),
         coverage_phase_gap=_phase_gap(result, "cobertura"),
         stability_phase_status=stability_status,
         stability_phase_gap=_phase_gap(result, "estabilitat_pla"),
-        operational_phase_status=changes_status,
+        operational_phase_status=hours_status,
         equity_phase_status=equity_status,
-        equity_phase_gap=_phase_gap(result, "equitat_hores_contractual"),
+        equity_phase_gap=_phase_gap(result, "equitat_social"),
         annual_phase_status=equity_status,
-        annual_phase_gap=_phase_gap(result, "equitat_hores_contractual"),
-        change_phase_status=changes_status,
-        change_phase_gap=_phase_gap(result, "desempat_canvis"),
-        tiebreak_phase_status=changes_status,
-        tiebreak_phase_gap=_phase_gap(result, "desempat_canvis"),
+        annual_phase_gap=_phase_gap(result, "equitat_social"),
+        change_phase_status=equity_status,
+        change_phase_gap=_phase_gap(result, "equitat_social"),
+        tiebreak_phase_status=equity_status,
+        tiebreak_phase_gap=_phase_gap(result, "equitat_social"),
         operational_penalty=(metrics.operational_penalty if metrics else None),
         annual_fairness_objective=(
             metrics.annual_fairness_objective
@@ -132,12 +140,27 @@ def summarize_candidate(
         ),
         change_fairness_objective=(
             metrics.change_fairness_objective
-            if metrics and changes_status in SOLVED_STATUSES
+            if metrics and equity_status in SOLVED_STATUSES
             else None
         ),
         change_tiebreak_penalty=(
             metrics.change_tiebreak_penalty
-            if metrics and changes_status in SOLVED_STATUSES
+            if metrics and equity_status in SOLVED_STATUSES
+            else None
+        ),
+        outside_preference_services=(
+            metrics.outside_preference_services
+            if metrics and equity_status in SOLVED_STATUSES
+            else None
+        ),
+        social_objective=(
+            metrics.social_objective
+            if metrics and equity_status in SOLVED_STATUSES
+            else None
+        ),
+        max_accumulated_night_services=(
+            metrics.max_accumulated_night_services
+            if metrics and equity_status in SOLVED_STATUSES
             else None
         ),
         plan_alterations=(metrics.plan_alterations if metrics else None),
@@ -175,8 +198,9 @@ def lexicographic_quality_key(
         -candidate.covered_needs,
         0 if candidate.coverage_phase_status == "OPTIMAL" else 1,
         *objective_key(candidate.plan_alterations),
-        *objective_key(candidate.annual_fairness_objective),
-        *objective_key(candidate.change_tiebreak_penalty),
+        -candidate.covered_minutes,
+        *objective_key(candidate.social_objective),
+        *objective_key(candidate.outside_preference_services),
         candidate.seed,
     )
 
@@ -228,12 +252,20 @@ def solve_multi_start(
     unique_seeds = tuple(dict.fromkeys(seeds))
     if not unique_seeds:
         raise MultiStartSelectionError("Cal indicar almenys una llavor")
-    contexts = {
-        seed: replace(config, random_seed=seed) for seed in unique_seeds
-    }
-    results = tuple(
-        (seed, planner.solve(contexts[seed])) for seed in unique_seeds
-    )
+    started_at = monotonic()
+    total_limit = planner.total_time_limit(config)
+    contexts: dict[int, SolverConfig] = {}
+    results: list[tuple[int, SolveResult]] = []
+    for seed in unique_seeds:
+        remaining = total_limit - (monotonic() - started_at)
+        if remaining <= 0:
+            break
+        contexts[seed] = replace(
+            config,
+            random_seed=seed,
+            max_time_seconds=remaining,
+        )
+        results.append((seed, planner.solve(contexts[seed])))
     return select_best_result(results, contexts=contexts)
 
 
@@ -250,8 +282,18 @@ def solve_adaptive_multi_start(
     if not unique_seeds:
         raise MultiStartSelectionError("Cal indicar almenys una llavor")
 
+    started_at = monotonic()
+    total_limit = (
+        planner.total_time_limit(config)
+        if hasattr(planner, "total_time_limit")
+        else config.max_time_seconds or 120.0
+    )
     first_seed = unique_seeds[0]
-    first_config = replace(config, random_seed=first_seed)
+    first_config = replace(
+        config,
+        random_seed=first_seed,
+        max_time_seconds=total_limit,
+    )
     first_result = planner.solve(first_config)
     first_candidate = summarize_candidate(
         first_seed, first_result, config=first_config
@@ -278,12 +320,16 @@ def solve_adaptive_multi_start(
             ),
         )
 
-    contexts = {
-        seed: replace(config, random_seed=seed) for seed in unique_seeds
-    }
+    contexts = {first_seed: first_config}
     results = [(first_seed, first_result)]
-    results.extend(
-        (seed, planner.solve(contexts[seed]))
-        for seed in unique_seeds[1:]
-    )
+    for seed in unique_seeds[1:]:
+        remaining = total_limit - (monotonic() - started_at)
+        if remaining <= 0:
+            break
+        contexts[seed] = replace(
+            config,
+            random_seed=seed,
+            max_time_seconds=remaining,
+        )
+        results.append((seed, planner.solve(contexts[seed])))
     return select_best_result(results, contexts=contexts)

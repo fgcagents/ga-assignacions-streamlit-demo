@@ -21,7 +21,6 @@ if str(PILOT_SRC) not in sys.path:
 
 from cp_sat_pilot import (  # noqa: E402
     Assignment,
-    CpSatPlanner,
     Need,
     PlanningProblem,
     SolveResult,
@@ -43,7 +42,10 @@ from planificador_cp_sat.services.preparacio_planificacio import (  # noqa: E402
 )
 from planificador_cp_sat.services.proposta_planificacio import (  # noqa: E402
     PlanningProposal,
+    PlanningProposalRegressionError,
     generate_planning_proposal,
+    planning_proposal_from_result,
+    validate_replanning_against_baseline,
 )
 
 
@@ -86,6 +88,7 @@ class IncidentCpSatDraft:
     result: SolveResult | None
     changes: tuple[dict[str, Any], ...]
     proposal: PlanningProposal | None = None
+    baseline_guard_used: bool = False
 
 
 def _readonly_connection(database_path: str | Path) -> sqlite3.Connection:
@@ -721,6 +724,42 @@ def _changes_from_result(
     return tuple(changes)
 
 
+def _generate_protected_incident_proposal(
+    context: IncidentPlanningContext,
+    solver_config: SolverConfig,
+) -> PlanningProposal:
+    """Repeteix la reparació sense permetre perdre cobertura no afectada."""
+    affected = set(context.problem.affected_need_ids)
+    protected_need_ids = {
+        assignment.need_id
+        for assignment in context.problem.reference_assignments
+        if assignment.need_id not in affected
+    }
+    protected_problem = replace(
+        context.problem,
+        locked_need_ids=frozenset(
+            set(context.problem.locked_need_ids) | protected_need_ids
+        ),
+    )
+    protected_prepared = replace(
+        context.prepared,
+        problem=protected_problem,
+    )
+    protected = generate_planning_proposal(
+        protected_prepared,
+        config=solver_config,
+        seeds=(solver_config.random_seed,),
+        force_all_seeds=True,
+    )
+    return planning_proposal_from_result(
+        context.prepared,
+        protected.selection,
+        solver_config=solver_config,
+        requested_seeds=(solver_config.random_seed,),
+        force_all_seeds=True,
+    )
+
+
 def generate_incident_draft(
     database_path: str | Path,
     incidence_id: int,
@@ -729,8 +768,7 @@ def generate_incident_draft(
 ) -> IncidentCpSatDraft:
     context = prepare_incident_problem(database_path, incidence_id)
     solver_config = config or SolverConfig(
-        max_time_seconds=15,
-        equity_time_seconds=15,
+        max_time_seconds=60,
         num_workers=8,
         random_seed=0,
     )
@@ -740,6 +778,22 @@ def generate_incident_draft(
         seeds=(solver_config.random_seed,),
         force_all_seeds=True,
     )
+    baseline_guard_used = False
+    try:
+        validate_replanning_against_baseline(
+            context.problem,
+            proposal.result.assignments,
+        )
+    except PlanningProposalRegressionError:
+        baseline_guard_used = True
+        proposal = _generate_protected_incident_proposal(
+            context,
+            solver_config,
+        )
+        validate_replanning_against_baseline(
+            context.problem,
+            proposal.result.assignments,
+        )
     result = proposal.result
     if not result.feasible:
         raise ValueError(
@@ -750,4 +804,5 @@ def generate_incident_draft(
         result=result,
         changes=_changes_from_result(context, result),
         proposal=proposal,
+        baseline_guard_used=baseline_guard_used,
     )

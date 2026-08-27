@@ -2,17 +2,18 @@
 
 ## Resultat
 
-La base `treballadors_demo.db` es va generar l'1 d'agost de 2026 amb
+La base `treballadors_demo.db` es va regenerar el 27 d'agost de 2026 a partir
+de `treballadors_2025_absentisme_base.db` amb
 `scripts/create_demo_database.py` i la llavor reproduïble `20260801`.
 L'original s'obre en mode de només lectura i no es modifica.
 
 La base resultant conté:
 
 - 97 persones sintètiques: 50 del grup A, 32 del grup T i 15 del grup V;
-- 11.036 registres de descans transformats;
-- 449 registres d'històric transformats;
-- 135 assignacions de referència transformades per conservar el cas de prova;
-- 348 necessitats de cobertura i 365 dies de calendari desplaçats;
+- 12.283 registres de descans transformats;
+- 834 registres d'històric transformats;
+- 834 assignacions de referència transformades;
+- 5.032 necessitats de cobertura i 365 dies de calendari desplaçats;
 - cap incidència, esborrany, auditoria ni publicació anterior.
 
 ## Transformacions aplicades
@@ -64,7 +65,7 @@ Qualsevol regeneració ha de tornar a executar tots els controls amb:
 
 ```powershell
 python scripts\create_demo_database.py `
-  --source ..\treballadors.db `
+  --source ..\..\data\treballadors_2025_absentisme_base.db `
   --output data\treballadors_demo.db `
   --replace
 python scripts\verify_deploy.py --require-demo-data

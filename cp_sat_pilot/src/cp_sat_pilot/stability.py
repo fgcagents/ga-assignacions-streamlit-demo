@@ -99,15 +99,13 @@ def summarize_stability_run(
     coverage_phase = phases.get("cobertura")
     stability_phase = phases.get("estabilitat_pla")
     operational_phase = None
-    annual_phase = phases.get("equitat_hores_contractual")
-    change_phase = phases.get("desempat_canvis")
-    tiebreak_phase = change_phase
+    annual_phase = phases.get("equitat_social")
+    change_phase = annual_phase
+    tiebreak_phase = annual_phase
     legacy_equity_phase = phases.get("equitat_oportunista")
     if not any((annual_phase, change_phase, tiebreak_phase)):
         annual_phase = change_phase = tiebreak_phase = legacy_equity_phase
-    equity_phases = tuple(
-        phase for phase in (annual_phase, change_phase, tiebreak_phase) if phase
-    )
+    equity_phases = (annual_phase,) if annual_phase else ()
     equity_status = (
         "OPTIMAL"
         if equity_phases and all(phase.status == "OPTIMAL" for phase in equity_phases)

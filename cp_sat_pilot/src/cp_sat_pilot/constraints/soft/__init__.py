@@ -8,7 +8,7 @@ from ...domain import (
 )
 from ..types import CoreModel, SoftComponents, SoftObjectiveWeights
 from .equity import build_equity_components
-from .operational import build_operational_components
+from .operational import OperationalComponents, build_operational_components
 
 
 def build_soft_components(
@@ -20,7 +20,7 @@ def build_soft_components(
     *,
     coverage_target: int,
     weights: SoftObjectiveWeights,
-) -> SoftComponents:
+) -> tuple[SoftComponents, OperationalComponents]:
     operational = build_operational_components(
         problem,
         core,
@@ -30,13 +30,15 @@ def build_soft_components(
         coverage_target=coverage_target,
         weights=weights,
     )
-    return build_equity_components(
-        problem,
-        core,
+    return (
+        build_equity_components(
+            core,
+            operational,
+            workers_by_id,
+            needs_by_id,
+            weights,
+        ),
         operational,
-        workers_by_id,
-        needs_by_id,
-        weights,
     )
 
 

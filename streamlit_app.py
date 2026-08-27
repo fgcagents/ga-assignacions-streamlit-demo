@@ -11,6 +11,15 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# La demo permet completar el cicle de proposta, validació i publicació.
+# Una configuració externa continua tenint prioritat quan cal desactivar-lo.
+os.environ.setdefault("PLANIFICACIO_INCREMENTAL_MODE", "active")
+os.environ.setdefault(
+    "PLANIFICACIO_INCREMENTAL_PUBLICATION_ENABLED",
+    "true",
+)
+
 CP_SAT_SOURCE_DIR = BASE_DIR / "cp_sat_pilot" / "src"
 if CP_SAT_SOURCE_DIR.is_dir():
     source_path = str(CP_SAT_SOURCE_DIR)
@@ -139,6 +148,11 @@ page = st.navigation(
             "app_pages/pla_publicat.py",
             title="Pla publicat",
             icon=":material/fact_check:",
+        ),
+        st.Page(
+            "app_pages/hores_realitzades.py",
+            title="Hores realitzades",
+            icon=":material/schedule:",
         ),
         st.Page(
             "app_pages/personal.py",

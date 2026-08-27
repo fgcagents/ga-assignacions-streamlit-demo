@@ -138,6 +138,7 @@ def inicialitza_planificacio(db_path: str | Path) -> None:
             ("necessitats_cobertes", "INTEGER"),
             ("necessitats_totals", "INTEGER"),
             ("errors_validacio", "INTEGER NOT NULL DEFAULT 0"),
+            ("proteccio_base_aplicada", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if nom not in columnes_propostes:
                 conn.execute(
@@ -508,7 +509,7 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
                 execucio_planificacio_id = ?,
                 snapshot_hash = ?, solver_status = ?,
                 necessitats_cobertes = ?, necessitats_totals = ?,
-                errors_validacio = ?
+                errors_validacio = ?, proteccio_base_aplicada = ?
             WHERE id = ?
             """,
             (
@@ -520,6 +521,7 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
                 result.covered_needs if result else 0,
                 result.total_needs if result else 0,
                 len(result.validation_errors) if result else 0,
+                int(draft.baseline_guard_used),
                 proposta_id,
             ),
         )
@@ -561,7 +563,8 @@ def generar_proposta(db_path: str | Path, incidencia_id: int) -> dict[str, Any]:
                 f"cobertura="
                 f"{result.covered_needs if result else 0}/"
                 f"{result.total_needs if result else 0}; "
-                f"canvis={len(draft.changes)}"
+                f"canvis={len(draft.changes)}; "
+                f"proteccio_base={int(draft.baseline_guard_used)}"
             ),
         )
     return obtenir_proposta(db_path, proposta_id)
@@ -703,7 +706,14 @@ def obtenir_proposta(db_path: str | Path, proposta_id: int) -> dict[str, Any]:
         for canvi in resultat["canvis"]
         if canvi["tipus"] == "assignacio_proposada"
     )
-    if serveis_pendents:
+    if resultat.get("proteccio_base_aplicada") and serveis_pendents:
+        resultat["recomanacio"] = "Es manté la solució base"
+        resultat["motiu_recomanacio"] = (
+            "No s'ha trobat una replanificació millor. Es conserva el pla "
+            f"no afectat i queden {serveis_pendents} servei/s afectat/s "
+            "sense cobertura."
+        )
+    elif serveis_pendents:
         resultat["recomanacio"] = "Replanificació general recomanada"
         resultat["motiu_recomanacio"] = (
             f"Hi ha {serveis_pendents} assignació/ns afectada/es sense cap candidat "
@@ -1385,11 +1395,17 @@ def _aprovar_proposta_cp_sat(
 ) -> dict[str, int]:
     """Publica una incidència amb el publicador diferencial comú."""
     from planificador_cp_sat.services.persistencia_planificacio import (
+        _reconstruct_final_assignments,
         load_planning_execution,
         validate_planning_execution,
     )
+    from planificador_cp_sat.services.preparacio_planificacio import (
+        prepare_planning_problem,
+    )
     from planificador_cp_sat.services.proposta_planificacio import (
         PlanningChangeKind,
+        PlanningProposalRegressionError,
+        validate_replanning_against_baseline,
     )
     from planificador_cp_sat.services.publicacio_planificacio import (
         apply_planning_changeset,
@@ -1441,6 +1457,19 @@ def _aprovar_proposta_cp_sat(
             ) from error
     elif stored.state != "validada":
         raise ValueError("La proposta genèrica no està disponible per publicar")
+
+    prepared = prepare_planning_problem(db_path, stored.request)
+    final_assignments = _reconstruct_final_assignments(
+        prepared.problem,
+        stored.changes,
+    )
+    try:
+        validate_replanning_against_baseline(
+            prepared.problem,
+            final_assignments,
+        )
+    except PlanningProposalRegressionError as error:
+        raise ValueError(str(error)) from error
 
     start = date.fromisoformat(str(proposta["data_inici"]))
     end = date.fromisoformat(str(proposta["data_fi"]))
