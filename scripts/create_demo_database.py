@@ -221,7 +221,10 @@ def _transform_rests(
         new_worker_id = _map_worker_id(worker_id, mapping)
         new_substitute_id = _map_worker_id(substitute_id, mapping)
         shifted = _shift_text(value_date)
-        generic_reason = "Dada de demostració" if reason else None
+        if reason and str(reason).startswith("SIM2025 | "):
+            generic_reason = "SIM2025 | Dada de demostració"
+        else:
+            generic_reason = "Dada de demostració" if reason else None
         connection.execute(
             "UPDATE descansos_dies SET treballador_id=?, treballador_substitut_id=?, "
             "data=?, motiu=? WHERE rowid=?",

@@ -30,8 +30,10 @@ data/treballadors_demo.db
 
 La demo s'ha regenerat a partir de
 `treballadors_2025_absentisme_base.db`. Conserva el patró anual d'absentisme,
-descans, històric i cobertura, però substitueix les identitats i desplaça totes
-les dates uniformement.
+els descansos i la cobertura, però substitueix les identitats i desplaça totes
+les dates uniformement. Després s'ha executat `reset_annual_test_state.py`: la
+base publicada no conté pla del grup T, històric operatiu, tancaments d'hores,
+versions ni publicacions anteriors.
 
 La base original no s'inclou perquè conté camps identificatius i el repositori
 és públic. El procés està documentat a
@@ -79,6 +81,13 @@ python scripts\create_demo_database.py `
   --source ..\..\data\treballadors_2025_absentisme_base.db `
   --output data\treballadors_demo.db `
   --replace
+Copy-Item data\treballadors_demo.db data\treballadors_demo_absentisme_reset.db
+python scripts\reset_annual_test_state.py `
+  data\treballadors_demo_absentisme_reset.db `
+  --backup-directory "$env:TEMP\cp_sat_demo_backups" `
+  --report "$env:TEMP\cp_sat_demo_reset.json"
+Move-Item data\treballadors_demo_absentisme_reset.db `
+  data\treballadors_demo.db -Force
 python scripts\verify_deploy.py --require-demo-data
 ```
 

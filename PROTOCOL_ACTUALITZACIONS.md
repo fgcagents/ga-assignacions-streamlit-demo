@@ -7,8 +7,9 @@ realitzades, el selector de motors i el `PriorityPlanner`. El motor vigent
 continua seleccionat per defecte.
 
 La base pseudonimitzada es regenera des de
-`treballadors_2025_absentisme_base.db`. L'aplicació arrenca en mode `active`
-amb publicació habilitada, sempre sobre una còpia temporal per sessió.
+`treballadors_2025_absentisme_base.db` i es reinicialitza amb
+`reset_annual_test_state.py` abans de publicar-la. L'aplicació arrenca en mode
+`active` amb publicació habilitada, sempre sobre una còpia temporal per sessió.
 
 ## Carpetes sincronitzades
 
@@ -27,7 +28,7 @@ Un canvi passa a la demo quan:
 1. està implementat al projecte de treball;
 2. supera les proves específiques;
 3. s'han sincronitzat les tres carpetes anteriors sense `__pycache__` ni `.pyc`;
-4. s'ha regenerat la base demo si ha canviat l'escenari;
+4. s'ha regenerat i reinicialitzat la base demo si ha canviat l'escenari;
 5. `python scripts\verify_deploy.py --require-demo-data` acaba correctament;
 6. no s'inclouen dades personals, backups ni resultats operatius.
 

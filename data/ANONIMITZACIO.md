@@ -11,10 +11,11 @@ La base resultant conté:
 
 - 97 persones sintètiques: 50 del grup A, 32 del grup T i 15 del grup V;
 - 12.283 registres de descans transformats;
-- 834 registres d'històric transformats;
-- 834 assignacions de referència transformades;
+- cap registre d'històric operatiu;
+- cap assignació publicada del grup T;
 - 5.032 necessitats de cobertura i 365 dies de calendari desplaçats;
-- cap incidència, esborrany, auditoria ni publicació anterior.
+- cap incidència, esborrany, auditoria, tancament d'hores, versió ni
+  publicació anterior.
 
 ## Transformacions aplicades
 
@@ -30,8 +31,10 @@ La base resultant conté:
 5. Totes les dates s'han mogut 728 dies, exactament 104 setmanes. No s'aplica
    cap desplaçament individual ni cap assignació aleatòria de descansos.
 6. Els motius lliures s'han eliminat o substituït per textos genèrics.
-7. S'han buidat incidències, auditories, propostes, publicacions i taules
-   antigues. Després s'ha reconstruït físicament SQLite amb `VACUUM`.
+7. Després de pseudonimitzar, `reset_annual_test_state.py` ha buidat el pla del
+   grup T, l'històric operatiu, les hores realitzades, els tancaments, les
+   versions, les execucions i les publicacions, preservant les entrades.
+8. Finalment s'ha reconstruït físicament SQLite amb `VACUUM`.
 
 No es desa ni es publica cap taula de correspondència entre la base original
 i la base demo.
@@ -44,8 +47,10 @@ i la base demo.
 - cap nom original detectat en cap camp de text ni en els bytes del fitxer;
 - els codis de plaça mantenen la correspondència operativa amb els serveis;
 - totes les identitats compleixen el patró sintètic;
-- cada persona sintètica manté el mateix patró de descansos, històric,
-  rotació, zona i habilitacions de manera coherent;
+- cada persona sintètica manté el mateix patró de descansos, rotació, zona i
+  habilitacions de manera coherent;
+- 1.496 dies de baixa sintètics conservats;
+- 18 taules d'estat operatiu verificades a zero;
 - prova CP-SAT de 7 dies: 86 de 87 necessitats cobertes, exactament el mateix
   resultat que amb la base original; el descobert és per saturació
   persona-dia dels candidats compatibles;

@@ -26,6 +26,7 @@ REQUIRED_PATHS = (
     ROOT / "planificador_cp_sat" / "services" / "hores_realitzades.py",
     ROOT / "planificador_cp_sat" / "solver_engines" / "__init__.py",
     ROOT / "scripts" / "create_demo_database.py",
+    ROOT / "scripts" / "reset_annual_test_state.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "model.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "domain.py",
     ROOT / "cp_sat_pilot" / "src" / "cp_sat_pilot" / "quality.py",
@@ -46,6 +47,26 @@ REQUIRED_APP_DEFAULTS = (
     'os.environ.setdefault("PLANIFICACIO_INCREMENTAL_MODE", "active")',
     '"PLANIFICACIO_INCREMENTAL_PUBLICATION_ENABLED",',
     '"true",',
+)
+RESET_STATE_TABLES = (
+    "proposta_canvis",
+    "propostes_replanificacio",
+    "incidencies_personal",
+    "proposta_inicial_cp_sat_elements",
+    "publicacions_inicials_cp_sat",
+    "propostes_inicials_cp_sat",
+    "versions_pla_publicat",
+    "publicacions_planificacio_cp_sat",
+    "canvis_planificacio_cp_sat",
+    "execucions_planificacio_cp_sat",
+    "bloquejos_planificacio",
+    "preassignacions_planificacio",
+    "auditoria_planificacio",
+    "ajustos_descans_substitucio",
+    "hores_realitzades",
+    "tancaments_hores_realitzades",
+    "assig_grup_T",
+    "historic_assignacions",
 )
 
 
@@ -78,12 +99,7 @@ def _verify_demo_database() -> list[str]:
                 "La base demo conté identitats que no segueixen el patró sintètic"
             )
 
-        for table in (
-            "auditoria_planificacio",
-            "incidencies_personal",
-            "propostes_inicials_cp_sat",
-            "propostes_replanificacio",
-        ):
+        for table in RESET_STATE_TABLES:
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),
