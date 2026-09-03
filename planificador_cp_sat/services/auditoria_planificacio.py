@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
@@ -77,10 +78,12 @@ def load_planning_publication_audit(
                    p.snapshot_anterior_hash, p.snapshot_posterior_hash,
                    p.affected_anterior_hash, p.affected_posterior_hash,
                    p.resum_json, p.backup_path, p.created_at, p.reverted_at,
-                   e.origen, e.origen_id, e.data_inici, e.data_fi
+                   e.origen, e.origen_id,
+                   p.data_inici, p.data_fi
             FROM publicacions_planificacio_cp_sat p
             JOIN execucions_planificacio_cp_sat e ON e.id = p.execucio_id
             WHERE p.execucio_id = ?
+            ORDER BY (p.reverted_at IS NULL) DESC, p.id DESC
             """,
             (execution_id,),
         ).fetchone()
@@ -131,7 +134,7 @@ def rollback_planning_changeset(
     *,
     failure_injector: FailureInjector | None = None,
 ) -> dict:
-    """Reverteix exclusivament els deltes si cap afectat ha canviat després."""
+    """Reverteix l'últim bloc si cap necessitat afectada ha canviat."""
     migrate_planning_schema(database_path)
     connection = sqlite3.connect(database_path, timeout=30)
     connection.row_factory = sqlite3.Row
@@ -139,14 +142,16 @@ def rollback_planning_changeset(
     try:
         connection.execute("BEGIN IMMEDIATE")
         stored = _load_with_connection(connection, execution_id)
-        if stored.state != "publicada":
+        if stored.state not in {"validada", "publicada"}:
             raise PlanningExecutionPersistenceError(
-                "Només es pot revertir una proposta publicada una sola vegada"
+                "Cada bloc només es pot revertir una sola vegada"
             )
         publication = connection.execute(
             """
             SELECT * FROM publicacions_planificacio_cp_sat
-            WHERE execucio_id = ?
+            WHERE execucio_id = ? AND reverted_at IS NULL
+            ORDER BY data_fi DESC, id DESC
+            LIMIT 1
             """,
             (execution_id,),
         ).fetchone()
@@ -154,7 +159,18 @@ def rollback_planning_changeset(
             raise PlanningExecutionPersistenceError(
                 "La publicació no està disponible per revertir"
             )
-        current_affected_hash = _affected_hash(connection, stored)
+        segment_start = date.fromisoformat(publication["data_inici"])
+        segment_end = date.fromisoformat(publication["data_fi"])
+        segment_changes = tuple(
+            change
+            for change in stored.changes
+            if segment_start <= change.date <= segment_end
+        )
+        current_affected_hash = _affected_hash(
+            connection,
+            stored,
+            segment_changes,
+        )
         if current_affected_hash != publication["affected_posterior_hash"]:
             raise PlanningExecutionStaleError(
                 "Alguna necessitat afectada ha canviat després de la "
@@ -193,7 +209,11 @@ def rollback_planning_changeset(
         if failure_injector:
             failure_injector("after_restore_history")
 
-        restored_affected_hash = _affected_hash(connection, stored)
+        restored_affected_hash = _affected_hash(
+            connection,
+            stored,
+            segment_changes,
+        )
         if restored_affected_hash != publication["affected_anterior_hash"]:
             raise PlanningExecutionPersistenceError(
                 "El pla afectat no coincideix amb l'estat anterior; "
@@ -204,18 +224,40 @@ def rollback_planning_changeset(
             """
             UPDATE publicacions_planificacio_cp_sat
             SET reverted_at = CURRENT_TIMESTAMP
-            WHERE execucio_id = ? AND reverted_at IS NULL
+            WHERE id = ? AND reverted_at IS NULL
             """,
-            (execution_id,),
+            (publication["id"],),
         )
+        remaining = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM publicacions_planificacio_cp_sat
+                WHERE execucio_id = ? AND reverted_at IS NULL
+                """,
+                (execution_id,),
+            ).fetchone()[0]
+        )
+        was_full_single_block = (
+            remaining == 0
+            and segment_start == stored.request.scope.start_date
+            and segment_end == stored.request.scope.end_date
+        )
+        next_state = "revertida" if was_full_single_block else "validada"
         updated = connection.execute(
             """
             UPDATE execucions_planificacio_cp_sat
-            SET estat = 'revertida', reverted_at = CURRENT_TIMESTAMP,
+            SET estat = ?,
+                reverted_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+                published_at = NULL,
                 snapshot_final_hash = ?
-            WHERE id = ? AND estat = 'publicada'
+            WHERE id = ? AND estat IN ('validada', 'publicada')
             """,
-            (final_snapshot_hash, execution_id),
+            (
+                next_state,
+                int(was_full_single_block),
+                final_snapshot_hash,
+                execution_id,
+            ),
         )
         if updated.rowcount != 1:
             raise PlanningExecutionPersistenceError(
@@ -228,14 +270,16 @@ def rollback_planning_changeset(
             publication_id=int(publication["id"]),
             origin=stored.request.trigger.kind.value,
             origin_id=stored.request.trigger.source_id,
-            start_date=stored.request.scope.start_date.isoformat(),
-            end_date=stored.request.scope.end_date.isoformat(),
+            start_date=segment_start.isoformat(),
+            end_date=segment_end.isoformat(),
         )
         connection.commit()
         return {
             "execution_id": execution_id,
             "plan_version": rollback_version,
-            "state": "revertida",
+            "state": next_state,
+            "segment_start": segment_start.isoformat(),
+            "segment_end": segment_end.isoformat(),
             "restored_snapshot_hash": final_snapshot_hash,
             "restored_assignments": len(rollback["previous_assignments"]),
             "removed_assignments": len(rollback["inserted_assignment_ids"]),

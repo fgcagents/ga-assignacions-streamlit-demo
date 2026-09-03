@@ -10,7 +10,7 @@ from datetime import time
 from pathlib import Path
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 EXECUTION_STATES = (
     "esborrany",
     "validada",
@@ -228,6 +228,89 @@ def _repair_legacy_replanning_foreign_key(
     return True
 
 
+def _migrate_partial_publications(connection: sqlite3.Connection) -> None:
+    """Permet diversos blocs consecutius per una mateixa execució."""
+    if not _table_exists(connection, "publicacions_planificacio_cp_sat"):
+        return
+    columns = {
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info(publicacions_planificacio_cp_sat)"
+        )
+    }
+    definition_row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'publicacions_planificacio_cp_sat'
+        """
+    ).fetchone()
+    definition = str(definition_row[0] or "") if definition_row else ""
+    if {
+        "data_inici",
+        "data_fi",
+    }.issubset(columns) and "execucio_id INTEGER NOT NULL UNIQUE" not in definition:
+        return
+
+    rebuilt = "publicacions_planificacio_cp_sat_rebuilt"
+    connection.execute(f'DROP TABLE IF EXISTS "{rebuilt}"')
+    connection.execute(
+        f"""
+        CREATE TABLE "{rebuilt}" (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            execucio_id INTEGER NOT NULL,
+            data_inici TEXT NOT NULL,
+            data_fi TEXT NOT NULL,
+            snapshot_anterior_hash TEXT NOT NULL,
+            snapshot_posterior_hash TEXT NOT NULL,
+            affected_anterior_hash TEXT NOT NULL,
+            affected_posterior_hash TEXT NOT NULL,
+            backup_path TEXT NOT NULL,
+            resum_json TEXT NOT NULL,
+            rollback_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            reverted_at TEXT,
+            FOREIGN KEY (execucio_id)
+                REFERENCES execucions_planificacio_cp_sat(id),
+            CHECK (data_fi >= data_inici)
+        )
+        """
+    )
+    start_expression = (
+        "p.data_inici" if "data_inici" in columns else "e.data_inici"
+    )
+    end_expression = "p.data_fi" if "data_fi" in columns else "e.data_fi"
+    affected_before_expression = (
+        "p.affected_anterior_hash"
+        if "affected_anterior_hash" in columns
+        else "''"
+    )
+    affected_after_expression = (
+        "p.affected_posterior_hash"
+        if "affected_posterior_hash" in columns
+        else "''"
+    )
+    connection.execute(
+        f"""
+        INSERT INTO "{rebuilt}"
+        (id, execucio_id, data_inici, data_fi,
+         snapshot_anterior_hash, snapshot_posterior_hash,
+         affected_anterior_hash, affected_posterior_hash,
+         backup_path, resum_json, rollback_json, created_at, reverted_at)
+        SELECT p.id, p.execucio_id, {start_expression}, {end_expression},
+               p.snapshot_anterior_hash, p.snapshot_posterior_hash,
+               {affected_before_expression}, {affected_after_expression},
+               p.backup_path, p.resum_json, p.rollback_json,
+               p.created_at, p.reverted_at
+        FROM publicacions_planificacio_cp_sat p
+        JOIN execucions_planificacio_cp_sat e ON e.id = p.execucio_id
+        """
+    )
+    connection.execute('DROP TABLE "publicacions_planificacio_cp_sat"')
+    connection.execute(
+        f'ALTER TABLE "{rebuilt}" RENAME TO "publicacions_planificacio_cp_sat"'
+    )
+
+
 def _create_generic_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -355,7 +438,9 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS publicacions_planificacio_cp_sat (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            execucio_id INTEGER NOT NULL UNIQUE,
+            execucio_id INTEGER NOT NULL,
+            data_inici TEXT NOT NULL,
+            data_fi TEXT NOT NULL,
             snapshot_anterior_hash TEXT NOT NULL,
             snapshot_posterior_hash TEXT NOT NULL,
             affected_anterior_hash TEXT NOT NULL,
@@ -366,7 +451,8 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             reverted_at TEXT,
             FOREIGN KEY (execucio_id)
-                REFERENCES execucions_planificacio_cp_sat(id)
+                REFERENCES execucions_planificacio_cp_sat(id),
+            CHECK (data_fi >= data_inici)
         )
         """
     )
@@ -451,6 +537,12 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
             )
     connection.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_publicacions_planificacio_execucio
+        ON publicacions_planificacio_cp_sat(execucio_id, id)
+        """
+    )
+    connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_execucions_planificacio_estat_periode
         ON execucions_planificacio_cp_sat(estat, data_inici, data_fi)
         """
@@ -480,11 +572,12 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
         ON preassignacions_planificacio(estat, data, servei)
         """
     )
+    connection.execute("DROP INDEX IF EXISTS idx_versions_pla_publicat_event")
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_pla_publicat_event
-        ON versions_pla_publicat(tipus_event, execucio_id)
-        WHERE execucio_id IS NOT NULL
+        ON versions_pla_publicat(tipus_event, publicacio_id)
+        WHERE publicacio_id IS NOT NULL
         """
     )
     connection.execute(
@@ -545,6 +638,7 @@ def migrate_planning_schema(database_path: str | Path) -> None:
             connection.execute("BEGIN IMMEDIATE")
             _repair_legacy_replanning_foreign_key(connection)
             _migrate_service_night_indicator(connection)
+            _migrate_partial_publications(connection)
             _create_generic_schema(connection)
             connection.commit()
         except Exception:

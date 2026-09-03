@@ -23,8 +23,8 @@ PUBLISHABLE_SOLVER_STATUSES = frozenset({"FEASIBLE", "OPTIMAL"})
 
 
 _LABELS = {
-    SolverEngine.CURRENT: "Vigent",
-    SolverEngine.PRIORITY: "Nou per prioritats",
+    SolverEngine.CURRENT: "Anterior",
+    SolverEngine.PRIORITY: "Vigent",
 }
 
 
@@ -41,7 +41,7 @@ def solver_engine_label(value: SolverEngine | str) -> str:
 
 def create_planner(
     problem: PlanningProblem,
-    engine: SolverEngine | str = SolverEngine.CURRENT,
+    engine: SolverEngine | str = SolverEngine.PRIORITY,
 ) -> CpSatPlanner:
     selected = normalize_solver_engine(engine)
     if selected is SolverEngine.PRIORITY:

@@ -108,7 +108,7 @@ class PlanningProposal:
     solver_config: SolverConfig | None = None
     requested_seeds: tuple[int, ...] = ()
     force_all_seeds: bool = False
-    solver_engine: SolverEngine = SolverEngine.CURRENT
+    solver_engine: SolverEngine = SolverEngine.PRIORITY
 
     @property
     def result(self) -> SolveResult:
@@ -280,7 +280,7 @@ def planning_proposal_from_result(
     solver_config: SolverConfig | None = None,
     requested_seeds: tuple[int, ...] = (),
     force_all_seeds: bool = False,
-    solver_engine: SolverEngine | str = SolverEngine.CURRENT,
+    solver_engine: SolverEngine | str = SolverEngine.PRIORITY,
 ) -> PlanningProposal:
     """Compara una solució vàlida amb la fotografia que l'ha originada."""
     if not isinstance(prepared, PreparedPlanningProblem):
@@ -410,7 +410,7 @@ def generate_planning_proposal(
     config: SolverConfig | None = None,
     seeds: Iterable[int] = (0, 1, 2),
     force_all_seeds: bool = False,
-    solver_engine: SolverEngine | str = SolverEngine.CURRENT,
+    solver_engine: SolverEngine | str = SolverEngine.PRIORITY,
 ) -> PlanningProposal:
     """Resol el problema preparat i retorna exclusivament canvis en memòria."""
     if not isinstance(prepared, PreparedPlanningProblem):

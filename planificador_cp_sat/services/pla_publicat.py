@@ -191,12 +191,16 @@ def list_published_assignments(
         ), origen_assignacio AS (
             SELECT c.assignacio_nova_id AS assignacio_id,
                    e.id AS execucio_id, e.origen, e.origen_id,
-                   e.published_at,
+                   p.created_at AS published_at,
                    v.versio
             FROM canvis_planificacio_cp_sat c
             JOIN execucions_planificacio_cp_sat e ON e.id = c.execucio_id
+            JOIN publicacions_planificacio_cp_sat p
+              ON p.execucio_id = e.id
+             AND c.data BETWEEN p.data_inici AND p.data_fi
+             AND p.reverted_at IS NULL
             LEFT JOIN versions_pla_publicat v
-              ON v.execucio_id = e.id AND v.tipus_event = 'publicacio'
+              ON v.publicacio_id = p.id AND v.tipus_event = 'publicacio'
             WHERE c.assignacio_nova_id IS NOT NULL
         )
         SELECT a.id, a.data,
@@ -282,16 +286,20 @@ def load_published_assignment_detail(
                        c.treballador_nou_id, e.id AS execution_id,
                        e.origen, e.origen_id, e.estat, e.created_at,
                        e.published_at, e.reverted_at,
+                       p.created_at AS segment_published_at,
                        vp.versio AS publication_version,
                        vr.versio AS rollback_version
                 FROM canvis_planificacio_cp_sat c
                 JOIN execucions_planificacio_cp_sat e
                   ON e.id = c.execucio_id
+                LEFT JOIN publicacions_planificacio_cp_sat p
+                  ON p.execucio_id = e.id
+                 AND c.data BETWEEN p.data_inici AND p.data_fi
                 LEFT JOIN versions_pla_publicat vp
-                  ON vp.execucio_id = e.id
+                  ON vp.publicacio_id = p.id
                  AND vp.tipus_event = 'publicacio'
                 LEFT JOIN versions_pla_publicat vr
-                  ON vr.execucio_id = e.id
+                  ON vr.publicacio_id = p.id
                  AND vr.tipus_event = 'rollback'
                 WHERE c.necessitat_id = ? || '::' || ?
                 ORDER BY c.created_at DESC, c.id DESC

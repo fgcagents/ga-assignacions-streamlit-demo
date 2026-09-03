@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,7 +27,11 @@ from planificador_cp_sat.services.persistencia_planificacio import (
 from planificador_cp_sat.services.preparacio_planificacio import (
     prepare_planning_problem,
 )
-from planificador_cp_sat.solver_engines import PUBLISHABLE_SOLVER_STATUSES
+from planificador_cp_sat.solver_engines import (
+    PUBLISHABLE_SOLVER_STATUSES,
+    SolverEngine,
+    normalize_solver_engine,
+)
 from planificador_cp_sat.services.proposta_planificacio import (
     PlanningChangeKind,
 )
@@ -90,8 +94,10 @@ def _operational_hash(
 def _affected_hash(
     connection: sqlite3.Connection,
     execution: StoredPlanningExecution,
+    changes: tuple | None = None,
 ) -> str:
-    need_ids = {item.need_id for item in execution.changes}
+    selected_changes = execution.changes if changes is None else changes
+    need_ids = {item.need_id for item in selected_changes}
     assignments = [
         _row_dict(row)
         for row in connection.execute("SELECT * FROM assig_grup_T ORDER BY id")
@@ -109,6 +115,66 @@ def _affected_hash(
             {"assignments": assignments, "history": history}
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _active_publications(
+    connection: sqlite3.Connection,
+    execution_id: int,
+) -> tuple[sqlite3.Row, ...]:
+    return tuple(
+        connection.execute(
+            """
+            SELECT * FROM publicacions_planificacio_cp_sat
+            WHERE execucio_id = ? AND reverted_at IS NULL
+            ORDER BY data_inici, id
+            """,
+            (execution_id,),
+        ).fetchall()
+    )
+
+
+def _publication_progress(
+    execution: StoredPlanningExecution,
+    publications: tuple[sqlite3.Row, ...],
+) -> dict[str, Any]:
+    scope_start = execution.request.scope.start_date
+    scope_end = execution.request.scope.end_date
+    expected_start = scope_start
+    for publication in publications:
+        segment_start = date.fromisoformat(publication["data_inici"])
+        segment_end = date.fromisoformat(publication["data_fi"])
+        if segment_start != expected_start or segment_end < segment_start:
+            raise PlanningExecutionPersistenceError(
+                "Els blocs publicats de la proposta no són consecutius"
+            )
+        expected_start = segment_end + timedelta(days=1)
+    published_until = (
+        date.fromisoformat(publications[-1]["data_fi"])
+        if publications
+        else None
+    )
+    complete = expected_start > scope_end
+    return {
+        "start_date": scope_start,
+        "end_date": scope_end,
+        "published_until": published_until,
+        "next_start": None if complete else expected_start,
+        "complete": complete,
+        "publication_count": len(publications),
+    }
+
+
+def planning_publication_progress(
+    database_path: str | Path,
+    execution_id: int,
+) -> dict[str, Any]:
+    """Retorna el tram publicat i el següent inici obligatori."""
+    migrate_planning_schema(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        execution = _load_with_connection(connection, execution_id)
+        publications = _active_publications(connection, execution_id)
+        return _publication_progress(execution, publications)
 
 
 def _create_backup(
@@ -294,11 +360,12 @@ def apply_planning_changeset(
     database_path: str | Path,
     execution_id: int,
     *,
+    publish_until: date | str | None = None,
     backup_directory: str | Path | None = None,
     failure_injector: FailureInjector | None = None,
     transaction_hook: PublicationHook | None = None,
 ) -> dict:
-    """Publica només els deltes d'una proposta validada en una transacció."""
+    """Publica el següent bloc consecutiu d'una proposta validada."""
     migrate_planning_schema(database_path)
     connection = sqlite3.connect(database_path, timeout=30)
     connection.row_factory = sqlite3.Row
@@ -316,23 +383,64 @@ def apply_planning_changeset(
                 "No es pot publicar la proposta: el solver no ha produït "
                 "una solució factible utilitzable"
             )
+        engine = normalize_solver_engine(
+            stored.configuration.get("solver_engine", SolverEngine.CURRENT.value)
+        )
+        publications = _active_publications(connection, execution_id)
+        progress = _publication_progress(stored, publications)
+        if progress["complete"]:
+            raise PlanningExecutionPersistenceError(
+                "La proposta ja està publicada completament"
+            )
+        segment_start = progress["next_start"]
+        assert segment_start is not None
+        segment_end = (
+            date.fromisoformat(publish_until)
+            if isinstance(publish_until, str)
+            else publish_until
+            if publish_until is not None
+            else stored.request.scope.end_date
+        )
+        if not segment_start <= segment_end <= stored.request.scope.end_date:
+            raise PlanningExecutionPersistenceError(
+                "La data final ha de quedar dins del següent bloc pendent"
+            )
+        if (
+            engine is not SolverEngine.PRIORITY
+            and segment_end != stored.request.scope.end_date
+        ):
+            raise PlanningExecutionPersistenceError(
+                "La publicació parcial només està disponible al solver vigent"
+            )
         try:
             prepared = prepare_planning_problem(database_path, stored.request)
         except Exception as error:
             raise PlanningExecutionStaleError(
                 f"No es pot reconstruir el pla actual: {error}"
             ) from error
-        if prepared.snapshot.fingerprint != stored.snapshot_hash:
+        if not publications:
+            if prepared.snapshot.fingerprint != stored.snapshot_hash:
+                raise PlanningExecutionStaleError(
+                    "El pla operatiu ha canviat des de la validació"
+                )
+            if planning_problem_hash(prepared.problem) != stored.problem_hash:
+                raise PlanningExecutionStaleError(
+                    "Les dades de planificació han canviat des de la validació"
+                )
+        elif _operational_hash(connection, stored) != publications[-1][
+            "snapshot_posterior_hash"
+        ]:
             raise PlanningExecutionStaleError(
-                "El pla operatiu ha canviat des de la validació"
+                "El pla operatiu ha canviat des de l'últim bloc publicat"
             )
-        if planning_problem_hash(prepared.problem) != stored.problem_hash:
-            raise PlanningExecutionStaleError(
-                "Les dades de planificació han canviat des de la validació"
-            )
+        segment_changes = tuple(
+            change
+            for change in stored.changes
+            if segment_start <= change.date <= segment_end
+        )
         final_assignments = _reconstruct_final_assignments(
             prepared.problem,
-            stored.changes,
+            segment_changes,
         )
         errors = CpSatPlanner(prepared.problem).validate(final_assignments)
         if errors:
@@ -342,7 +450,7 @@ def apply_planning_changeset(
             )
 
         operational_before = _operational_hash(connection, stored)
-        affected_before = _affected_hash(connection, stored)
+        affected_before = _affected_hash(connection, stored, segment_changes)
         backup_path = _create_backup(
             database_path,
             execution_id,
@@ -356,7 +464,7 @@ def apply_planning_changeset(
         }
         new_assignment_ids: list[int] = []
         new_assignment_ids_by_change: dict[int, int] = {}
-        for change in stored.changes:
+        for change in segment_changes:
             current = _active_row_for_need(
                 connection,
                 change.date.isoformat(),
@@ -435,18 +543,18 @@ def apply_planning_changeset(
                 failure_injector("after_insert")
 
         summary = {
-            "changes": len(stored.changes),
+            "changes": len(segment_changes),
             "additions": sum(
                 item.kind is PlanningChangeKind.ADDITION
-                for item in stored.changes
+                for item in segment_changes
             ),
             "removals": sum(
                 item.kind is PlanningChangeKind.REMOVAL
-                for item in stored.changes
+                for item in segment_changes
             ),
             "reassignments": sum(
                 item.kind is PlanningChangeKind.REASSIGNMENT
-                for item in stored.changes
+                for item in segment_changes
             ),
             "new_assignment_ids": new_assignment_ids,
         }
@@ -459,18 +567,21 @@ def apply_planning_changeset(
             if hook_summary:
                 summary["origin"] = hook_summary
         operational_after = _operational_hash(connection, stored)
-        affected_after = _affected_hash(connection, stored)
+        affected_after = _affected_hash(connection, stored, segment_changes)
         publication_id = int(
             connection.execute(
                 """
                 INSERT INTO publicacions_planificacio_cp_sat
-                (execucio_id, snapshot_anterior_hash, snapshot_posterior_hash,
+                (execucio_id, data_inici, data_fi,
+                 snapshot_anterior_hash, snapshot_posterior_hash,
                  affected_anterior_hash, affected_posterior_hash,
                  backup_path, resum_json, rollback_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id,
+                    segment_start.isoformat(),
+                    segment_end.isoformat(),
                     operational_before,
                     operational_after,
                     affected_before,
@@ -481,14 +592,22 @@ def apply_planning_changeset(
                 ),
             ).lastrowid
         )
+        complete = segment_end == stored.request.scope.end_date
         updated = connection.execute(
             """
             UPDATE execucions_planificacio_cp_sat
-            SET estat = 'publicada', published_at = CURRENT_TIMESTAMP,
+            SET estat = ?,
+                published_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
                 backup_path = ?, snapshot_final_hash = ?
             WHERE id = ? AND estat = 'validada'
             """,
-            (str(backup_path), operational_after, execution_id),
+            (
+                "publicada" if complete else "validada",
+                int(complete),
+                str(backup_path),
+                operational_after,
+                execution_id,
+            ),
         )
         if updated.rowcount != 1:
             raise PlanningExecutionPersistenceError(
@@ -501,15 +620,18 @@ def apply_planning_changeset(
             publication_id=publication_id,
             origin=stored.request.trigger.kind.value,
             origin_id=stored.request.trigger.source_id,
-            start_date=stored.request.scope.start_date.isoformat(),
-            end_date=stored.request.scope.end_date.isoformat(),
+            start_date=segment_start.isoformat(),
+            end_date=segment_end.isoformat(),
         )
         connection.commit()
         return {
             "publication_id": publication_id,
             "plan_version": plan_version,
             "execution_id": execution_id,
-            "state": "publicada",
+            "state": "publicada" if complete else "validada",
+            "complete": complete,
+            "segment_start": segment_start.isoformat(),
+            "segment_end": segment_end.isoformat(),
             "new_assignment_ids": tuple(new_assignment_ids),
             "final_snapshot_hash": operational_after,
             "backup_path": str(backup_path),

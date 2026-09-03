@@ -32,6 +32,7 @@ from planificador_cp_sat.services.persistencia_planificacio import (
 )
 from planificador_cp_sat.services.publicacio_planificacio import (
     apply_planning_changeset,
+    planning_publication_progress,
 )
 from planificador_cp_sat.services.planificacio_selectiva import (
     SelectivePlanningError,
@@ -1155,6 +1156,27 @@ def _render_incremental_actions(
     solver_status = getattr(execution, "solver_status", "OPTIMAL")
     publishable = solver_status in PUBLISHABLE_SOLVER_STATUSES
     optimality_certified = assessment.get("technical_ready", False)
+    selected_engine = normalize_solver_engine(
+        getattr(execution, "configuration", {}).get(
+            "solver_engine", SolverEngine.CURRENT.value
+        )
+    )
+    progress = {
+        "published_until": None,
+        "next_start": execution.request.scope.start_date
+        if hasattr(execution, "request")
+        else None,
+        "publication_count": 0,
+    }
+    if selected_engine is SolverEngine.PRIORITY or execution.state == "publicada":
+        progress = planning_publication_progress(db_path, execution.id)
+    has_published_blocks = progress["publication_count"] > 0
+    if has_published_blocks:
+        st.info(
+            "Publicat fins al "
+            f"**{_data_llegible(progress['published_until'])}** en "
+            f"{progress['publication_count']} bloc/s."
+        )
     if execution.state == "esborrany":
         if publishable and not optimality_certified:
             st.warning(
@@ -1194,17 +1216,42 @@ def _render_incremental_actions(
                 "Mode ombra actiu: pots revisar i validar la proposta, però "
                 "la publicació està desactivada."
             )
+        partial_publication = selected_engine is SolverEngine.PRIORITY
+        publish_until = (
+            execution.request.scope.end_date
+            if hasattr(execution, "request")
+            else None
+        )
+        if partial_publication:
+            next_start = progress["next_start"]
+            assert next_start is not None
+            st.caption(
+                "El següent bloc començarà automàticament el "
+                f"**{_data_llegible(next_start)}**. Tria fins a quin dia "
+                "el vols publicar."
+            )
+            publish_until = st.date_input(
+                "Publicar fins al dia",
+                value=next_start,
+                min_value=next_start,
+                max_value=execution.request.scope.end_date,
+                key=f"planning_publish_until_{execution.id}",
+            )
         confirmed = st.checkbox(
             (
                 "Confirmo que vull publicar aquest resultat FEASIBLE i "
                 "accepto que no s'ha demostrat l'optimalitat"
                 if solver_status == "FEASIBLE"
-                else "Confirmo que vull publicar exclusivament aquests canvis"
+                else (
+                    "Confirmo que vull publicar aquest bloc consecutiu"
+                    if partial_publication
+                    else "Confirmo que vull publicar exclusivament aquests canvis"
+                )
             ),
             key=f"planning_publish_confirm_{execution.id}",
         )
         if st.button(
-            "Publicar canvis",
+            "Publicar bloc" if partial_publication else "Publicar canvis",
             type="primary",
             icon=":material/publish:",
             disabled=(
@@ -1215,16 +1262,21 @@ def _render_incremental_actions(
             key=f"planning_publish_{execution.id}",
         ):
             try:
-                result = apply_planning_changeset(db_path, execution.id)
+                result = apply_planning_changeset(
+                    db_path,
+                    execution.id,
+                    publish_until=publish_until,
+                )
                 st.session_state[NOTICE_KEY] = (
-                    f"Publicació completada: "
+                    f"Bloc {_data_llegible(result['segment_start'])} – "
+                    f"{_data_llegible(result['segment_end'])} publicat: "
                     f"{len(result['new_assignment_ids'])} altes."
                 )
                 st.rerun()
             except (sqlite3.Error, ValueError) as error:
                 st.error(str(error))
 
-    if execution.state in {"esborrany", "validada"}:
+    if execution.state in {"esborrany", "validada"} and not has_published_blocks:
         confirmed = st.checkbox(
             "Confirmo que vull descartar aquesta proposta",
             key=f"planning_discard_confirm_{execution.id}",
@@ -1242,15 +1294,19 @@ def _render_incremental_actions(
             except (sqlite3.Error, ValueError) as error:
                 st.error(str(error))
 
-    if execution.state == "publicada":
+    if has_published_blocks:
         audit = load_planning_publication_audit(db_path, execution.id)
-        st.caption(f"Còpia de seguretat: {Path(audit.backup_path).name}")
+        st.caption(
+            f"Últim bloc: {_data_llegible(audit.start_date)} – "
+            f"{_data_llegible(audit.end_date)} · "
+            f"còpia de seguretat: {Path(audit.backup_path).name}"
+        )
         confirmed = st.checkbox(
-            "Confirmo que vull revertir només els canvis d'aquesta publicació",
+            "Confirmo que vull revertir només l'últim bloc publicat",
             key=f"planning_rollback_confirm_{execution.id}",
         )
         if st.button(
-            "Revertir publicació",
+            "Revertir últim bloc",
             icon=":material/undo:",
             disabled=not confirmed,
             key=f"planning_rollback_{execution.id}",
@@ -1713,19 +1769,8 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 max_value=maximum,
                 key="planning_end",
             )
-        solver_engine = st.segmented_control(
-            "Motor de planificació",
-            (SolverEngine.CURRENT.value, SolverEngine.PRIORITY.value),
-            default=SolverEngine.CURRENT.value,
-            required=True,
-            width="stretch",
-            format_func=solver_engine_label,
-            key="planning_solver_engine",
-            help=(
-                "El motor vigent conserva el comportament actual. El motor "
-                "nou aplica les prioritats acumulatives en paral·lel."
-            ),
-        )
+        solver_engine = SolverEngine.PRIORITY.value
+        st.caption("Motor de planificació: **Vigent per prioritats**.")
         with st.expander(
             "Opcions de l'abast",
             icon=":material/filter_alt:",
@@ -1806,9 +1851,8 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                     help=(
                         "Pressupost compartit per cobertura, estabilitat, "
                         "serveis fora de preferència i equitat social. "
-                        "El motor vigent conserva els seus límits interns; "
-                        "el motor nou pot necessitar més temps en períodes "
-                        "llargs."
+                        "El solver reparteix aquest pressupost entre totes "
+                        "les fases de prioritat."
                     ),
                 )
             with workers_column:
@@ -1901,7 +1945,7 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
             f"{_data_llegible(reviewed_start)} – "
             f"{_data_llegible(reviewed_end)}. El càlcul utilitzarà exactament "
             "aquesta configuració revisada. "
-            f"Motor: **{solver_engine_label(reviewed_scope.get('solver_engine', SolverEngine.CURRENT))}**."
+            f"Motor: **{solver_engine_label(reviewed_scope.get('solver_engine', SolverEngine.PRIORITY))}**."
         )
         with st.container(horizontal=True):
             st.metric(
@@ -1947,7 +1991,7 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
         num_workers = reviewed_scope["num_workers"]
         force_seeds = reviewed_scope["force_seeds"]
         solver_engine = reviewed_scope.get(
-            "solver_engine", SolverEngine.CURRENT.value
+            "solver_engine", SolverEngine.PRIORITY.value
         )
         try:
             from cp_sat_pilot import SolverConfig
