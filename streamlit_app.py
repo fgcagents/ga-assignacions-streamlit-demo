@@ -150,6 +150,11 @@ page = st.navigation(
             icon=":material/fact_check:",
         ),
         st.Page(
+            "app_pages/cronograma.py",
+            title="Cronograma",
+            icon=":material/calendar_view_week:",
+        ),
+        st.Page(
             "app_pages/hores_realitzades.py",
             title="Hores realitzades",
             icon=":material/schedule:",

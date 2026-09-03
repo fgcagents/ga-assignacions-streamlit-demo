@@ -2,9 +2,9 @@
 
 ## Estat Alfa 1
 
-La còpia desplegable inclou l'aplicació multipàgina, el tancament d'hores
-realitzades, el selector de motors i el `PriorityPlanner`. El motor vigent
-continua seleccionat per defecte.
+La còpia desplegable inclou l'aplicació multipàgina, el cronograma informatiu,
+el tancament d'hores realitzades, el selector de motors i el `PriorityPlanner`.
+El motor vigent continua seleccionat per defecte.
 
 La base pseudonimitzada es regenera des de
 `treballadors_2025_absentisme_base.db` i es reinicialitza amb

@@ -1,7 +1,8 @@
 # Planificador CP-SAT — Streamlit Demo Alfa 1
 
 Còpia desplegable de l'aplicació multipàgina. Inclou resum, planificació
-incremental, pla publicat, hores realitzades, personal i incidències.
+incremental, pla publicat, cronograma informatiu, hores realitzades, personal
+i incidències.
 
 El formulari permet escollir entre el motor **Vigent** i **Nou per prioritats**.
 El motor nou resol restriccions dures, cobertura, minuts coberts, estabilitat,
@@ -45,6 +46,10 @@ En iniciar l'aplicació, cada sessió rep una còpia temporal independent:
 - els canvis no es comparteixen entre sessions;
 - el rollback es pot provar dins de la mateixa sessió;
 - les dades temporals es poden perdre quan el servidor es reinicia.
+
+La pàgina **Cronograma** consulta aquesta mateixa còpia temporal i reflecteix
+la cobertura, el pla oficial i les propostes disponibles durant la sessió,
+sense oferir accions d'edició pròpies.
 
 Aquest comportament és adequat per a demostració, no per a producció.
 
