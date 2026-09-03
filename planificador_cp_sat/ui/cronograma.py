@@ -641,7 +641,7 @@ def _render_detail(cell: dict[str, Any]) -> None:
         f"Habilitació: {cell['skills'] or '—'}",
     ]
     if cell["worker_name"]:
-        details.insert(0, f"Treballador: {cell['worker_name']} · {cell['worker_id']}")
+        details.insert(0, f"Treballador: {cell['worker_id']} · {cell['worker_name']}")
     if cell["start_time"]:
         suffix = " (+1)" if cell["overnight"] else ""
         details.append(
@@ -656,7 +656,7 @@ def _render_detail(cell: dict[str, Any]) -> None:
     if cell["previous_worker_name"]:
         st.caption(
             "Assignació anterior: "
-            f"{cell['previous_worker_name']} · {cell['previous_worker_id']}"
+            f"{cell['previous_worker_id']} · {cell['previous_worker_namee']}"
         )
     if cell["reason"]:
         st.info(cell["reason"], icon=":material/info:")
