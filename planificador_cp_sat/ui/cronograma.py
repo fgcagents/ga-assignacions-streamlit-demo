@@ -653,10 +653,10 @@ def _render_detail(cell: dict[str, Any]) -> None:
             f"{_PROPOSAL_LABELS.get(cell['proposal_state'], cell['proposal_state'])}"
         )
     st.write("  \n".join(details))
-    if cell["previous_worker_name"]:
+    if cell["previous_worker_id"]:
         st.caption(
             "Assignació anterior: "
-            f"{cell['previous_worker_id']} · {cell['previous_worker_namee']}"
+            f"{cell['previous_worker_id']} · {cell['previous_worker_name']}"
         )
     if cell["reason"]:
         st.info(cell["reason"], icon=":material/info:")
