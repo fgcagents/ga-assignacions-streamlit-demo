@@ -468,58 +468,49 @@ def _render_navigation(options: dict[str, Any], view: str) -> tuple[date, date]:
     previous, picker, following, today_column, latest = st.columns(
         [0.7, 2.2, 0.7, 1, 1.25]
     )
-    with previous:
-        previous.caption("Anterior")
-        if previous.button("", icon=":material/chevron_left:", width="stretch", key="nav_prev"):
-            st.session_state[_ANCHOR_KEY] = (
-                _shift_month(current, -1)
-                if view == "Mes"
-                else current - timedelta(days=7)
-            )
-            st.rerun()
-    with picker:
-        picker.caption("Tria una data")
-        selected = picker.date_input(
-            "Data de referència",
-            min_value=options["coverage_start"],
-            max_value=options["coverage_end"],
-            format="DD/MM/YYYY",
-            key=_ANCHOR_KEY,
-            label_visibility="collapsed",
+    if previous.button(
+        "Anterior", icon=":material/chevron_left:", width="stretch"
+    ):
+        st.session_state[_ANCHOR_KEY] = (
+            _shift_month(current, -1)
+            if view == "Mes"
+            else current - timedelta(days=7)
         )
-    with following:
-        following.caption("Següent")
-        if following.button("", icon=":material/chevron_right:", width="stretch", key="nav_next"):
-            st.session_state[_ANCHOR_KEY] = (
-                _shift_month(selected, 1)
-                if view == "Mes"
-                else selected + timedelta(days=7)
-            )
-            st.rerun()
-    with today_column:
-        today_column.caption("Avui")
-        today = date.today()
-        today_available = options["coverage_start"] <= today <= options["coverage_end"]
-        if today_column.button(
-            "",
-            icon=":material/today:",
-            width="stretch",
-            disabled=not today_available,
-            key="nav_today",
-        ):
-            st.session_state[_ANCHOR_KEY] = today
-            st.rerun()
-    with latest:
-        latest.caption("Darrer pla")
-        if latest.button(
-            "",
-            icon=":material/update:",
-            width="stretch",
-            disabled=options["official_end"] is None,
-            key="nav_latest",
-        ):
-            st.session_state[_ANCHOR_KEY] = options["official_end"]
-            st.rerun()
+        st.rerun()
+    selected = picker.date_input(
+        "Data de referència",
+        min_value=options["coverage_start"],
+        max_value=options["coverage_end"],
+        format="DD/MM/YYYY",
+        key=_ANCHOR_KEY,
+    )
+    if following.button(
+        "Següent", icon=":material/chevron_right:", width="stretch"
+    ):
+        st.session_state[_ANCHOR_KEY] = (
+            _shift_month(selected, 1)
+            if view == "Mes"
+            else selected + timedelta(days=7)
+        )
+        st.rerun()
+    today = date.today()
+    today_available = options["coverage_start"] <= today <= options["coverage_end"]
+    if today_column.button(
+        "Avui",
+        icon=":material/today:",
+        width="stretch",
+        disabled=not today_available,
+    ):
+        st.session_state[_ANCHOR_KEY] = today
+        st.rerun()
+    if latest.button(
+        "Darrer pla",
+        icon=":material/update:",
+        width="stretch",
+        disabled=options["official_end"] is None,
+    ):
+        st.session_state[_ANCHOR_KEY] = options["official_end"]
+        st.rerun()
     return _period(selected, view)
 
 
@@ -650,8 +641,7 @@ def _render_detail(cell: dict[str, Any]) -> None:
         f"Habilitació: {cell['skills'] or '—'}",
     ]
     if cell["worker_name"]:
-        # details.insert(0, f"Treballador: {cell['worker_id']} · {cell['worker_name']}")
-        pass
+        details.insert(0, f"Treballador: {cell['worker_id']} · {cell['worker_name']}")
     if cell["start_time"]:
         suffix = " (+1)" if cell["overnight"] else ""
         details.append(
