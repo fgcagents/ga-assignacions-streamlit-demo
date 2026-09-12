@@ -369,8 +369,8 @@ export default function (component) {
 
           const name = document.createElement("span")
           name.className = "pill-name"
-          name.textContent = cell.worker_name
-            ? shortName(cell.worker_name, data.compact)
+          name.textContent = cell.worker_id
+            ? shortName(cell.worker_id, data.compact)
             : cell.status === "pending"
             ? "Pendent"
             : "Descobert"
@@ -478,11 +478,12 @@ def _render_navigation(options: dict[str, Any], view: str) -> tuple[date, date]:
         )
         st.rerun()
     selected = picker.date_input(
-        "Data de referència",
+        "Tria una data",
         min_value=options["coverage_start"],
         max_value=options["coverage_end"],
         format="DD/MM/YYYY",
         key=_ANCHOR_KEY,
+        label_visibility="collapsed",
     )
     if following.button(
         "Següent", icon=":material/chevron_right:", width="stretch"
