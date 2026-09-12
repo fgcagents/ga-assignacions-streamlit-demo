@@ -15,6 +15,7 @@ from ..domain import (
     Worker,
     assignments_compatible,
     group_history_by_worker,
+    violates_late_friday_base_weekend,
 )
 from .types import CoreModel
 
@@ -56,6 +57,8 @@ class HardConstraintSet:
         if (worker.id, need.date) in self.problem.exclusions:
             return False
         if need.date in worker.rest_dates:
+            return False
+        if violates_late_friday_base_weekend(worker, need):
             return False
         if not need.required_skills.intersection(worker.skills):
             return False
@@ -109,9 +112,7 @@ class HardConstraintSet:
         incompatibility_constraints = self._add_pair_compatibility(
             model, assignment_vars, need_ids_by_worker
         )
-        self._add_annual_hours(
-            model, assignment_vars, need_ids_by_worker
-        )
+        self._add_annual_hours(model, assignment_vars, need_ids_by_worker)
 
         return CoreModel(
             model=model,

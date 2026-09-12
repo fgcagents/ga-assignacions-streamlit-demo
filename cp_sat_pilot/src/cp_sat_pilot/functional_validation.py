@@ -15,7 +15,7 @@ from .domain import (
     SolveResult,
     assignments_compatible,
 )
-from .model import CpSatPlanner
+from .model import PlannerCore
 
 
 def _profile(
@@ -47,7 +47,7 @@ def _uncovered_diagnostic(
     problem: PlanningProblem,
     need: Need,
     assignments: tuple[Assignment, ...],
-    planner: CpSatPlanner,
+    planner: PlannerCore,
 ) -> dict:
     workers_t = [worker for worker in problem.workers if worker.group == "T"]
     skilled = [
@@ -200,7 +200,7 @@ def analyze_functional_result(
     names = worker_names or {}
     assignments = tuple(result.assignments)
     covered_ids = {assignment.need_id for assignment in assignments}
-    planner = CpSatPlanner(problem)
+    planner = PlannerCore(problem)
     needs_by_id = {need.id: need for need in problem.needs}
     candidate_counts: dict[str, int] = defaultdict(int)
     for _, need_id in planner.candidate_pairs():

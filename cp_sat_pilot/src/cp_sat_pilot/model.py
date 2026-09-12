@@ -8,15 +8,13 @@ from typing import Iterable
 
 from ortools.sat.python import cp_model
 
+from .configuration import PriorityPolicy
 from .constraints import (
     CoreModel,
     HardConstraintSet,
-    SoftComponents,
     SoftObjectiveWeights,
 )
-from .constraints.soft.equity import build_equity_components
 from .constraints.soft.operational import (
-    build_operational_components,
     is_turn_change,
     is_zone_change,
 )
@@ -27,7 +25,6 @@ from .domain import (
     OptimizationPhase,
     PlanningProblem,
     SocialDiagnosticSummary,
-    SoftMetrics,
     SolveResult,
     Worker,
 )
@@ -41,7 +38,6 @@ STATUS_NAMES = {
     cp_model.OPTIMAL: "OPTIMAL",
 }
 INFORMATIONAL_EQUITY_GAP_PERMILLE = 100
-FINALIZATION_RESERVE_SECONDS = 1.0
 
 
 def _comparison_profile(worker: Worker) -> str:
@@ -79,10 +75,11 @@ class SolverConfig:
     random_seed: int = 0
     log_search_progress: bool = False
     soft_weights: SoftObjectiveWeights = SoftObjectiveWeights()
+    priority_policy: PriorityPolicy = PriorityPolicy()
 
 
-class CpSatPlanner:
-    """Orquestra les fases; les regles viuen a ``constraints``."""
+class PlannerCore:
+    """Candidats, validació i diagnòstics compartits; no resol planificacions."""
 
     def __init__(self, problem: PlanningProblem):
         self.problem = problem
@@ -105,180 +102,6 @@ class CpSatPlanner:
     def is_turn_change(worker: Worker, need: Need) -> bool:
         return is_turn_change(worker, need)
 
-    def solve(self, config: SolverConfig | None = None) -> SolveResult:
-        config = config or SolverConfig()
-        self._validate_config(config)
-        started_at = monotonic()
-        total_budget = self.total_time_limit(config)
-        finalization_reserve = min(
-            FINALIZATION_RESERVE_SECONDS,
-            total_budget * 0.05,
-        )
-        deadline = started_at + max(
-            0.001,
-            total_budget - finalization_reserve,
-        )
-        equity_reserve = min(
-            config.equity_time_seconds or 0.0,
-            max(0.0, deadline - started_at - 0.001),
-        )
-        pre_equity_deadline = deadline - equity_reserve
-        core = self._build_core_model()
-        model = core.model
-        phases: list[OptimizationPhase] = []
-
-        model.maximize(sum(core.coverage_vars.values()))
-        coverage_solver, coverage_phase = self._solve_phase(
-            model,
-            config,
-            "cobertura",
-            maximize=True,
-            time_limit_seconds=max(0.001, pre_equity_deadline - monotonic()),
-        )
-        phases.append(coverage_phase)
-        if coverage_phase.status not in {"FEASIBLE", "OPTIMAL"}:
-            return self._empty_result(core, phases)
-        if coverage_phase.status != "OPTIMAL":
-            return self._finish_result(
-                core,
-                phases,
-                coverage_solver,
-                coverage_phase,
-                started_at,
-                complete=False,
-            )
-
-        coverage_target = round(coverage_phase.objective_value or 0)
-        model.add(sum(core.coverage_vars.values()) == coverage_target)
-        operational = build_operational_components(
-            self.problem,
-            core,
-            self.workers,
-            self.needs,
-            self.history_by_worker,
-            coverage_target=coverage_target,
-            weights=config.soft_weights,
-        )
-
-        final_solver = coverage_solver
-        self._add_assignment_hints(model, core, coverage_solver)
-
-        if self.problem.reference_assignments and any(
-            assignment.need_id not in self.problem.affected_need_ids
-            for assignment in self.problem.reference_assignments
-        ):
-            if monotonic() >= pre_equity_deadline:
-                return self._finish_result(
-                    core,
-                    phases,
-                    final_solver,
-                    coverage_phase,
-                    started_at,
-                    complete=False,
-                )
-            model.clear_objective()
-            model.minimize(operational.plan_alterations)
-            stability_solver, stability_phase = self._solve_phase(
-                model,
-                config,
-                "estabilitat_pla",
-                maximize=False,
-                time_limit_seconds=max(
-                    0.001, pre_equity_deadline - monotonic()
-                ),
-            )
-            phases.append(stability_phase)
-            if stability_phase.status in {"FEASIBLE", "OPTIMAL"}:
-                final_solver = stability_solver
-            if stability_phase.status != "OPTIMAL":
-                return self._finish_result(
-                    core,
-                    phases,
-                    final_solver,
-                    coverage_phase,
-                    started_at,
-                    complete=False,
-                )
-            model.add(
-                operational.plan_alterations
-                == round(stability_phase.objective_value or 0)
-            )
-            self._add_assignment_hints(model, core, final_solver)
-
-        if monotonic() >= pre_equity_deadline:
-            return self._finish_result(
-                core,
-                phases,
-                final_solver,
-                coverage_phase,
-                started_at,
-                complete=False,
-            )
-        covered_minutes = sum(
-            self.needs[need_id].duration_minutes * variable
-            for need_id, variable in core.coverage_vars.items()
-        )
-        self._add_assignment_hints(model, core, final_solver)
-        model.clear_objective()
-        model.maximize(covered_minutes)
-        hours_solver, hours_phase = self._solve_phase(
-            model,
-            config,
-            "hores_cobertes",
-            maximize=True,
-            time_limit_seconds=max(0.001, pre_equity_deadline - monotonic()),
-        )
-        phases.append(hours_phase)
-        if hours_phase.status in {"FEASIBLE", "OPTIMAL"}:
-            final_solver = hours_solver
-        if hours_phase.status != "OPTIMAL":
-            return self._finish_result(
-                core,
-                phases,
-                final_solver,
-                coverage_phase,
-                started_at,
-                complete=False,
-            )
-        model.add(covered_minutes == round(hours_phase.objective_value or 0))
-        if monotonic() >= pre_equity_deadline:
-            return self._finish_result(
-                core,
-                phases,
-                final_solver,
-                coverage_phase,
-                started_at,
-                complete=False,
-            )
-        soft = build_equity_components(
-            core,
-            operational,
-            self.workers,
-            self.needs,
-            config.soft_weights,
-        )
-        self._add_assignment_hints(model, core, hours_solver)
-        model.clear_objective()
-        model.minimize(soft.social_objective)
-        social_solver, social_phase = self._solve_phase(
-            model,
-            config,
-            "equitat_social",
-            maximize=False,
-            time_limit_seconds=max(0.001, deadline - monotonic()),
-        )
-        phases.append(social_phase)
-        if social_phase.status in {"FEASIBLE", "OPTIMAL"}:
-            final_solver = social_solver
-        return self._finish_result(
-            core,
-            phases,
-            final_solver,
-            coverage_phase,
-            started_at,
-            soft=soft,
-            complete=social_phase.status == "OPTIMAL",
-        )
 
     def _finish_result(
         self,
@@ -288,7 +111,6 @@ class CpSatPlanner:
         coverage_phase: OptimizationPhase,
         started_at: float,
         *,
-        soft: SoftComponents | None = None,
         complete: bool,
     ) -> SolveResult:
         assignments = self._extract_assignments(
@@ -319,21 +141,11 @@ class CpSatPlanner:
             candidate_variables=len(core.candidate_pairs),
             incompatibility_constraints=core.incompatibility_constraints,
             validation_errors=errors,
-            soft_metrics=(
-                self._extract_soft_metrics(solver, soft)
-                if soft is not None
-                else None
-            ),
             optimization_phases=tuple(phases),
             equity_diagnostics=diagnostics,
             social_diagnostic_summary=social_summary,
         )
 
-    def total_time_limit(self, config: SolverConfig) -> float:
-        maximum = 60.0 if self.problem.reference_assignments else 120.0
-        if config.max_time_seconds is None:
-            return maximum
-        return min(config.max_time_seconds, maximum)
 
     @staticmethod
     def _validate_config(config: SolverConfig) -> None:
@@ -369,7 +181,12 @@ class CpSatPlanner:
             )
 
     def _build_core_model(self) -> CoreModel:
-        return self.hard_constraints.build_core_model()
+        core = self.hard_constraints.build_core_model()
+        references = {a.need_id: a.worker_id for a in self.problem.reference_assignments}
+        for (wid, nid), variable in core.assignment_vars.items():
+            if nid in references:
+                core.model.add_hint(variable, int(references[nid] == wid))
+        return core
 
     @staticmethod
     def _add_assignment_hints(
@@ -471,72 +288,6 @@ class CpSatPlanner:
         )
         return assignments
 
-    @staticmethod
-    def _extract_soft_metrics(
-        solver: cp_model.CpSolver,
-        soft: SoftComponents,
-    ) -> SoftMetrics:
-        return SoftMetrics(
-            plan_alterations=solver.value(soft.plan_alterations),
-            preferred_assignment_violations=solver.value(
-                soft.preferred_assignment_violations
-            ),
-            consecutive_excess_windows=solver.value(
-                soft.consecutive_excess
-            ),
-            friday_violation=solver.value(soft.friday_violation),
-            zone_changes=solver.value(soft.zone_changes),
-            turn_changes=solver.value(soft.turn_changes),
-            annual_hours_range_minutes=solver.value(
-                soft.annual_hours_range_minutes
-            ),
-            annual_hours_equity_penalty=solver.value(
-                soft.annual_hours_equity_penalty
-            ),
-            accumulated_zone_rate_range_permille=solver.value(
-                soft.accumulated_zone_rate_range
-            ),
-            accumulated_turn_rate_range_permille=solver.value(
-                soft.accumulated_turn_rate_range
-            ),
-            worst_change_equity_gap_permille=solver.value(
-                soft.worst_change_equity_gap
-            ),
-            accumulated_zone_equity_penalty=solver.value(
-                soft.accumulated_zone_equity_penalty
-            ),
-            accumulated_turn_equity_penalty=solver.value(
-                soft.accumulated_turn_equity_penalty
-            ),
-            operational_penalty=solver.value(
-                soft.operational_penalty
-            ),
-            annual_fairness_objective=solver.value(
-                soft.annual_fairness_objective
-            ),
-            change_fairness_objective=solver.value(
-                soft.change_fairness_objective
-            ),
-            change_tiebreak_penalty=solver.value(
-                soft.change_tiebreak_penalty
-            ),
-            normalized_total_changes=solver.value(
-                soft.normalized_total_changes
-            ),
-            opportunistic_equity_objective=solver.value(
-                soft.opportunistic_equity_objective
-            ),
-            adjusted_annual_rate_range_permille=solver.value(
-                soft.adjusted_annual_rate_range
-            ),
-            outside_preference_services=solver.value(
-                soft.outside_preference_services
-            ),
-            max_accumulated_night_services=solver.value(
-                soft.max_accumulated_night_services
-            ),
-            social_objective=solver.value(soft.social_objective),
-        )
 
     def _build_equity_diagnostics(
         self,

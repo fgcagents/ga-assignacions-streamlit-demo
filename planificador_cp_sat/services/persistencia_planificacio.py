@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from cp_sat_pilot import (
     Assignment,
-    CpSatPlanner,
+    PlannerCore,
     PlanningProblem,
 )
 
@@ -331,12 +331,14 @@ def planning_problem_hash(problem: PlanningProblem) -> str:
 
 
 def _configuration_payload(proposal: PlanningProposal) -> dict:
+    from .preferencies_solver import preference_profile
     return {
         "solver": (
             asdict(proposal.solver_config) if proposal.solver_config else None
         ),
         "seeds": list(proposal.requested_seeds),
         "force_all_seeds": proposal.force_all_seeds,
+        "preference_priority": preference_profile(proposal.solver_config.soft_weights) if proposal.solver_config else None,
         "solver_engine": proposal.solver_engine.value,
     }
 
@@ -731,7 +733,7 @@ def validate_planning_execution(
                     )
                 except PlanningProposalRegressionError as error:
                     raise PlanningExecutionPersistenceError(str(error)) from error
-            errors = CpSatPlanner(prepared.problem).validate(final_assignments)
+            errors = PlannerCore(prepared.problem).validate(final_assignments)
             if errors:
                 raise PlanningExecutionPersistenceError(
                     "El pla reconstruït incompleix restriccions dures: "

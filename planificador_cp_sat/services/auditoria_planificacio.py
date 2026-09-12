@@ -142,7 +142,7 @@ def rollback_planning_changeset(
     try:
         connection.execute("BEGIN IMMEDIATE")
         stored = _load_with_connection(connection, execution_id)
-        if stored.state not in {"validada", "publicada"}:
+        if stored.state not in {"validada", "invalidada", "publicada"}:
             raise PlanningExecutionPersistenceError(
                 "Cada bloc només es pot revertir una sola vegada"
             )
@@ -242,7 +242,13 @@ def rollback_planning_changeset(
             and segment_start == stored.request.scope.start_date
             and segment_end == stored.request.scope.end_date
         )
-        next_state = "revertida" if was_full_single_block else "validada"
+        next_state = (
+            "invalidada"
+            if stored.state == "invalidada"
+            else "revertida"
+            if was_full_single_block
+            else "validada"
+        )
         updated = connection.execute(
             """
             UPDATE execucions_planificacio_cp_sat
@@ -250,7 +256,7 @@ def rollback_planning_changeset(
                 reverted_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
                 published_at = NULL,
                 snapshot_final_hash = ?
-            WHERE id = ? AND estat IN ('validada', 'publicada')
+            WHERE id = ? AND estat IN ('validada', 'invalidada', 'publicada')
             """,
             (
                 next_state,

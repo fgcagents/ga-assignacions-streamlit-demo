@@ -346,6 +346,7 @@ def _prepare_incident_problem_legacy(
             replace(
                 worker,
                 rest_dates=worker.rest_dates - released_dates,
+                base_rest_dates=worker.base_rest_dates - released_dates,
             )
             if worker.id == affected_worker_id
             else worker
@@ -374,6 +375,7 @@ def _prepare_incident_problem_legacy(
             replace(
                 worker,
                 rest_dates=worker.rest_dates - substitution_dates,
+                base_rest_dates=worker.base_rest_dates - substitution_dates,
             )
             if worker.id == substitute_id
             else worker

@@ -24,6 +24,12 @@ HARD_RULES = (
     ),
     RuleSpec("rest_12h", "Solapaments i descans mínim de 12 h", "hard", "factibilitat"),
     RuleSpec("annual_hours", "Màxim anual d'hores", "hard", "factibilitat"),
+    RuleSpec(
+        "friday_base_weekend",
+        "Divendres tard abans de descans base de cap de setmana",
+        "hard",
+        "factibilitat",
+    ),
 )
 
 
@@ -37,7 +43,6 @@ SOFT_RULES = (
     ),
     RuleSpec("plan_stability", "Mínima alteració", "objective", "estabilitat_pla"),
     RuleSpec("consecutive_days", "Dies consecutius", "diagnostic", "postanalisi"),
-    RuleSpec("friday", "Regla de divendres", "diagnostic", "postanalisi"),
     RuleSpec("preferred", "Assignació preferida", "diagnostic", "postanalisi"),
     RuleSpec(
         "annual_equity",

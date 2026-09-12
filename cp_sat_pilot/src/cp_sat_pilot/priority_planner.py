@@ -6,17 +6,19 @@ from time import monotonic
 
 from ortools.sat.python import cp_model
 
+from .configuration import PriorityPolicy
 from .constraints import CoreModel, SoftObjectiveWeights
 from .constraints.soft.operational import is_zone_change
 from .domain import Need, OptimizationPhase, SolveResult, Worker
-from .model import CpSatPlanner, SolverConfig
+from .model import PlannerCore, SolverConfig
 
 
-MAX_CONSECUTIVE_ZONE_CHANGES = 3
-
-
-class PriorityPlanner(CpSatPlanner):
+class PriorityPlanner(PlannerCore):
     """Construeix el pla per prioritats simples i acumulatives."""
+
+    def __init__(self, problem, *, penalize_zone_streak: bool = True):
+        super().__init__(problem)
+        self.penalize_zone_streak = penalize_zone_streak
 
     def total_time_limit(self, config: SolverConfig) -> float:
         if config.max_time_seconds is None:
@@ -118,6 +120,7 @@ class PriorityPlanner(CpSatPlanner):
                 day,
                 accumulated,
                 config.soft_weights,
+                config.priority_policy,
             )
             for name, expression, maximize in objectives:
                 final_solver, phase = self._optimize(
@@ -294,6 +297,7 @@ class PriorityPlanner(CpSatPlanner):
         day: date,
         accumulated: dict[str, dict[str, int]],
         weights: SoftObjectiveWeights,
+        policy: PriorityPolicy = PriorityPolicy(),
     ) -> tuple[tuple[str, object, bool], ...]:
         pairs = tuple(
             (worker_id, need_id, variable)
@@ -337,9 +341,9 @@ class PriorityPlanner(CpSatPlanner):
                 0,
                 accumulated[worker_id]["zone_change_streak"]
                 + 1
-                - MAX_CONSECUTIVE_ZONE_CHANGES,
+                - policy.zone_streak_threshold,
             )
-            if is_zone_change(
+            if self.penalize_zone_streak and policy.zone_streak_enabled and is_zone_change(
                 self.workers[worker_id],
                 self.needs[need_id],
             )

@@ -1,5 +1,6 @@
 """Interfície de la primera versió controlada de replanificació per incidències."""
 
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -8,18 +9,23 @@ import plotly.express as px
 import streamlit as st
 
 from planificador_cp_sat.services.descansos import llista_treballadors
+from planificador_cp_sat.services.auditoria_planificacio import (
+    load_planning_publication_audit,
+)
 from planificador_cp_sat.services.desplegament_planificacio import (
     load_planning_rollout_config,
 )
 from planificador_cp_sat.services.incidencies import (
     TIPUS_INCIDENCIA, aprovar_proposta, diagnosticar_abast_incidencia,
-    generar_proposta, inicialitza_planificacio, llista_incidencies,
-    llista_propostes, obtenir_proposta, registrar_incidencia,
+    eliminar_proposta_esborrany, generar_proposta, inicialitza_planificacio,
+    llista_incidencies, llista_propostes, obtenir_proposta,
+    registrar_incidencia,
 )
 from planificador_cp_sat.ui.components import (
     claus_selector_treballador,
     selector_treballador,
 )
+from planificador_cp_sat.ui.notificacions_xivato import render_xivato_pilot
 
 
 def _etiqueta(t: dict) -> str:
@@ -35,6 +41,17 @@ def _reinicia_registre_incidencia() -> None:
     ]
     for clau in claus:
         st.session_state.pop(clau, None)
+
+
+def _render_xivato_proposta_aprovada(
+    db_path: str | Path,
+    proposta: dict,
+) -> None:
+    execution_id = proposta.get("execucio_planificacio_id")
+    if proposta.get("estat") != "aprovada" or execution_id is None:
+        return
+    audit = load_planning_publication_audit(db_path, int(execution_id))
+    render_xivato_pilot(db_path, audit)
 
 
 ETIQUETES_TIPUS = {
@@ -338,6 +355,8 @@ def _render_resum_proposta(detall: dict, comparacio: pd.DataFrame) -> None:
 def render_pestanya_incidencies(db_path: str | Path) -> None:
     if st.session_state.pop("reinicia_registre_incidencia", False):
         _reinicia_registre_incidencia()
+    if st.session_state.pop("reinicia_revisio_incidencia", False):
+        st.session_state.pop("incidencia_reparacio_revisar", None)
     ruta = str(db_path)
     try:
         rollout = load_planning_rollout_config()
@@ -479,6 +498,12 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                 )
                 st.rerun()
     with propostes:
+        missatge_eliminacio = st.session_state.pop(
+            "missatge_reparacio_eliminada",
+            None,
+        )
+        if missatge_eliminacio:
+            st.success(missatge_eliminacio)
         files = llista_propostes(ruta)
         if not files: st.info("Encara no hi ha reparacions preparades.")
         else:
@@ -516,6 +541,7 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                 ),
                 index=None,
                 placeholder="Selecciona una reparació",
+                key="incidencia_reparacio_revisar",
             )
             if proposta:
                 detall = obtenir_proposta(ruta, proposta["id"])
@@ -612,3 +638,45 @@ def render_pestanya_incidencies(db_path: str | Path) -> None:
                                 st.rerun()
                             except ValueError as error:
                                 st.error(str(error))
+                    with st.expander(
+                        "Eliminar aquesta reparació",
+                        icon=":material/delete:",
+                    ):
+                        st.caption(
+                            "Només s'elimina l'esborrany. La incidència torna "
+                            "a quedar disponible per preparar una reparació nova "
+                            "i el pla publicat no es modifica."
+                        )
+                        with st.form(f"elimina_reparacio_{proposta['id']}"):
+                            confirma_eliminacio = st.checkbox(
+                                "Confirmo que vull eliminar aquesta reparació "
+                                "en esborrany"
+                            )
+                            elimina = st.form_submit_button(
+                                "Eliminar reparació",
+                                icon=":material/delete:",
+                            )
+                        if elimina:
+                            if not confirma_eliminacio:
+                                st.error("Cal confirmar l'eliminació.")
+                            else:
+                                try:
+                                    eliminar_proposta_esborrany(
+                                        ruta,
+                                        proposta["id"],
+                                    )
+                                    st.session_state[
+                                        "missatge_reparacio_eliminada"
+                                    ] = (
+                                        f"Reparació R-{proposta['id']} "
+                                        "eliminada. La incidència es pot "
+                                        "tornar a preparar."
+                                    )
+                                    st.session_state[
+                                        "reinicia_revisio_incidencia"
+                                    ] = True
+                                    st.rerun()
+                                except (ValueError, sqlite3.Error) as error:
+                                    st.error(str(error))
+                else:
+                    _render_xivato_proposta_aprovada(ruta, proposta)

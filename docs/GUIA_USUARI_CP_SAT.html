@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ca">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Guia d’usuari — Guia CP-SAT</title>
+  <style>
+    :root{
+      --ink:#20232a;--muted:#626875;--faint:#8b919d;--paper:#fff;
+      --canvas:#f3f4f7;--line:#dfe2e8;--soft:#f8f8fa;
+      --accent:#ff4b4b;--accent-dark:#c92f3f;--accent-soft:#fff0f1;
+      --green:#18835c;--green-soft:#e9f7f0;--amber:#9a6500;
+      --amber-soft:#fff8df;--blue:#2266b3;--blue-soft:#edf5ff;
+      --red:#b42318;--red-soft:#fff0ee;--shadow:0 12px 36px rgba(30,35,45,.08);
+      --radius:16px;--content:920px;--nav:248px;
+    }
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.62 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+    a{color:inherit}
+    .layout{display:grid;grid-template-columns:var(--nav) minmax(0,1fr);min-height:100vh}
+    nav{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#24262d;color:#f8f9fb}
+    .brand{display:flex;align-items:center;gap:11px;font-weight:760;letter-spacing:-.01em;margin-bottom:28px}
+    .brand-mark{width:34px;height:34px;border-radius:11px;background:var(--accent);display:grid;place-items:center;color:#fff;font-weight:800}
+    nav .eyebrow{color:#b8bdc8;margin:0 0 8px}
+    nav ol{list-style:none;padding:0;margin:0}
+    nav a{display:block;padding:8px 10px;margin:2px 0;border-radius:9px;color:#d6d9e0;text-decoration:none;font-size:14px}
+    nav a:hover,nav a:focus{background:#343740;color:#fff;outline:none}
+    nav .inc-link{color:#ffd6d9}
+    .nav-note{margin-top:26px;padding:14px;border:1px solid #41444e;border-radius:12px;color:#bfc3cc;font-size:12px}
+    main{min-width:0;padding:38px 36px 80px}
+    .document{max-width:var(--content);margin:0 auto}
+    .hero{position:relative;overflow:hidden;background:linear-gradient(135deg,#262932 0%,#333642 68%,#4d3035 100%);color:#fff;border-radius:24px;padding:44px 48px;box-shadow:var(--shadow)}
+    .hero:after{content:"";position:absolute;right:-80px;bottom:-120px;width:330px;height:330px;border-radius:50%;border:50px solid rgba(255,75,75,.18)}
+    .eyebrow{font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase;color:var(--accent-dark)}
+    .hero .eyebrow{color:#ffb8bd}
+    h1{font-size:clamp(34px,5vw,58px);line-height:1.04;letter-spacing:-.045em;margin:12px 0 18px;max-width:760px}
+    .lead{font-size:19px;max-width:680px;color:#e2e4e9;margin:0}
+    .meta{display:flex;gap:9px;flex-wrap:wrap;margin-top:28px;position:relative;z-index:1}
+    .pill{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid rgba(255,255,255,.22);border-radius:999px;font-size:12px;color:#f5f6f8;background:rgba(255,255,255,.06)}
+    section{scroll-margin-top:24px;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:34px 38px;margin-top:24px;box-shadow:0 5px 18px rgba(30,35,45,.035)}
+    section.incidents{border-top:5px solid var(--accent)}
+    h2{font-size:30px;line-height:1.18;letter-spacing:-.025em;margin:8px 0 18px}
+    h3{font-size:20px;line-height:1.3;margin:30px 0 12px}
+    h4{font-size:16px;margin:22px 0 8px}
+    p{margin:10px 0;color:#3f444e}
+    strong{color:var(--ink)}
+    code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#f0f1f4;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:.9em}
+    pre{overflow:auto;background:#24262d;color:#f6f7f9;border-radius:12px;padding:17px 20px;margin:16px 0;font-size:14px}
+    pre code{background:none;border:0;padding:0;color:inherit}
+    .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}
+    .card{border:1px solid var(--line);background:var(--soft);border-radius:13px;padding:18px}
+    .card .n{display:grid;place-items:center;width:31px;height:31px;border-radius:10px;background:var(--accent-soft);color:var(--accent-dark);font-weight:800;margin-bottom:12px}
+    .card h3,.card h4{margin:0 0 6px}
+    .card p{font-size:14px;margin:0;color:var(--muted)}
+    .callout{display:grid;grid-template-columns:28px 1fr;gap:12px;padding:16px 18px;border-radius:12px;margin:20px 0;border:1px solid}
+    .callout .symbol{font-weight:850;font-size:17px;text-align:center}
+    .callout p{margin:0}
+    .info{background:var(--blue-soft);border-color:#c8def7}.info .symbol{color:var(--blue)}
+    .safe{background:var(--green-soft);border-color:#bfe4d2}.safe .symbol{color:var(--green)}
+    .warn{background:var(--amber-soft);border-color:#f0d98b}.warn .symbol{color:var(--amber)}
+    .danger{background:var(--red-soft);border-color:#f1c1bc}.danger .symbol{color:var(--red)}
+    .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:26px 0 18px}
+    .flow .step{position:relative;text-align:center;padding:0 8px}
+    .flow .step:not(:last-child):after{content:"";position:absolute;top:18px;left:61%;width:78%;height:2px;background:var(--line)}
+    .flow .dot{position:relative;z-index:1;display:grid;place-items:center;margin:0 auto 10px;width:38px;height:38px;border-radius:50%;background:#fff;border:3px solid var(--accent);color:var(--accent-dark);font-weight:800}
+    .flow b{display:block;font-size:14px}.flow small{display:block;color:var(--muted);line-height:1.35;margin-top:4px}
+    .steps{list-style:none;counter-reset:item;padding:0;margin:20px 0}
+    .steps li{counter-increment:item;position:relative;padding:15px 0 15px 48px;border-top:1px solid var(--line)}
+    .steps li:first-child{border-top:0}
+    .steps li:before{content:counter(item);position:absolute;left:2px;top:13px;width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:var(--accent);color:#fff;font-weight:800;font-size:14px}
+    figure{margin:25px 0}
+    figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);background:#fff}
+    figcaption{font-size:13px;color:var(--muted);margin-top:9px;text-align:center}
+    table{width:100%;border-collapse:separate;border-spacing:0;margin:18px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px}
+    th,td{padding:12px 13px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+    th{background:#f2f3f6;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#555b66}
+    tr:last-child td{border-bottom:0}
+    td:first-child{font-weight:650;color:var(--ink)}
+    .status{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700;white-space:nowrap}
+    .s-orange{background:#fff0d9;color:#935c00}.s-blue{background:#e9f2ff;color:#1d5a9b}.s-green{background:#e6f5ed;color:#176f50}.s-red{background:#ffe9e7;color:#a72e24}
+    .checklist{list-style:none;padding:0;margin:14px 0}
+    .checklist li{position:relative;padding:7px 0 7px 30px}
+    .checklist li:before{content:"✓";position:absolute;left:0;top:6px;color:var(--green);font-weight:850}
+    .no-list li:before{content:"!";color:var(--amber)}
+    .legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0;font-size:13px;color:var(--muted)}
+    .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+    .orange{background:#ff8a00}.green{background:#2ca02c}.red{background:#d62728}.gray{background:#7f7f7f}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .quick{background:#24262d;color:#fff}.quick h2,.quick strong{color:#fff}.quick p,.quick li{color:#dfe2e8}.quick code{background:#383b45;border-color:#4a4e59;color:#fff}
+    .footer{padding:28px 6px 0;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+    .screen-only{display:inline}
+    @media(max-width:900px){.layout{display:block}nav{position:relative;height:auto}nav ol{columns:2}main{padding:24px 16px}.cards{grid-template-columns:1fr}.two{grid-template-columns:1fr}.flow{grid-template-columns:1fr}.flow .step{display:grid;grid-template-columns:46px 1fr;text-align:left;margin:8px 0}.flow .step:not(:last-child):after{display:none}.flow .dot{grid-row:1/3;margin:0}.hero{padding:36px 28px}section{padding:28px 22px}}
+    @media(max-width:560px){nav ol{columns:1}.hero{border-radius:18px}h1{font-size:38px}table{display:block;overflow-x:auto;white-space:normal}}
+    @media print{
+      @page{size:A4;margin:14mm}
+      body{background:#fff;font-size:10.5pt;color:#000}
+      .layout{display:block}.screen-only,nav{display:none!important}main{padding:0}.document{max-width:none}
+      .hero{box-shadow:none;border-radius:0;padding:24px 28px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      section{box-shadow:none;border-radius:0;margin:12px 0;padding:18px 20px;break-inside:avoid-page}
+      section.incidents{break-inside:auto}.callout,.status,.dot{print-color-adjust:exact}
+      figure{break-inside:avoid}figure img{box-shadow:none;max-height:210mm;object-fit:contain}
+      h2,h3{break-after:avoid}table{break-inside:auto}tr{break-inside:avoid}.footer{border-top:1px solid #bbb}
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <nav aria-label="Índex de la guia">
+    <div class="brand"><span class="brand-mark">CP</span><span>Guia d'usuari</span></div>
+    <p class="eyebrow">Índex</p>
+    <ol>
+      <li><a href="#inici">1. Una aplicació, tot un sistema</a></li>
+      <li><a href="#obrir">2. Obrir l'aplicació</a></li>
+      <li><a href="#resum">3. Començar pel resum</a></li>
+      <li><a href="#planificacio">4. Crear i publicar una planificació</a></li>
+      <li><a href="#oficial">5. Consultar el pla que està en vigor</a></li>
+      <li><a href="#consulta">6. Consultar sense modificar dades</a></li>
+      <li><a href="#hores">7. Confirmar les hores realitzades</a></li>
+      <li><a href="#cronograma">8. Veure els serveis al cronograma</a></li>
+      <li><a href="#xivato">9. Enviar els avisos del pilot Xivato</a></li>
+      <li><a href="#incidencies">10. Gestió d'incidències</a></li>
+      <li><a href="#tipus">11. Escollir el tipus correcte</a></li>
+      <li><a href="#registrar">12. Registrar la incidència</a></li>
+      <li><a href="#generar">13. Generar la proposta CP-SAT</a></li>
+      <li><a href="#revisar">14. Revisar i aplicar la proposta</a></li>
+      <li><a href="#problemes">15. Problemes habituals</a></li>
+      <li><a href="#checklist">16. Checklist diari</a></li>
+      <li><a href="#glossari">17. Glossari</a></li>
+    </ol>
+    <div class="nav-note">Guia d’usuari · 12/09/2026<br><br>Consulta la guia mentre treballes amb l’ajuda lateral.</div>
+  </nav>
+
+  <main>
+  <div class="document">
+    <header class="hero">
+      <div class="eyebrow">Planificador de cobertures</div>
+      <h1>Guia d'usuari del sistema CP-SAT</h1>
+      <p class="lead">Com crear, revisar i publicar una planificació; consultar la disponibilitat; i resoldre incidències sense modificar el pla fins a l'aprovació explícita.</p>
+      <div class="meta">
+        <span class="pill">Guia d’usuari</span><span class="pill">12/09/2026</span><span class="pill">Ajuda del planificador</span>
+      </div>
+    </header>
+
+    <section id="inici">
+      <div class="eyebrow">Començar</div>
+<h2>Una aplicació, tot un sistema</h2><p>La demostració inclou també <strong>Cronograma</strong> al menú superior. Cada sessió treballa amb una còpia temporal independent de les dades de demostració; no és el pla operatiu real.</p><div class="cards"><article class="card"><div class="n">1</div><h3>Resum</h3><p>Veure què requereix atenció i accedir a les accions habituals.</p></article><article class="card"><div class="n">2</div><h3>Planificació</h3><p>Preparar, revisar i publicar propostes.</p></article><article class="card"><div class="n">3</div><h3>Pla publicat</h3><p>Consultar les assignacions oficials i el seu historial.</p></article><article class="card"><div class="n">4</div><h3>Hores realitzades</h3><p>Confirmar períodes i consultar els totals.</p></article><article class="card"><div class="n">5</div><h3>Personal</h3><p>Consultar disponibilitat i calendaris.</p></article><article class="card"><div class="n">6</div><h3>Incidències</h3><p>Registrar un fet i revisar-ne la reparació.</p></article></div>      <div class="callout safe"><div class="symbol">✓</div><p><strong>Regla de seguretat principal.</strong> Generar una proposta no modifica el pla publicat. La planificació completa només canvia en publicar-la; una incidència només s'aplica quan es confirma «Aprovar i aplicar reparació al pla vigent».</p></div>
+      <div class="callout warn"><div class="symbol">!</div><p>L'aplicació és un suport a la decisió. Una proposta pot ser matemàticament vàlida i, alhora, deixar serveis descoberts. Cal revisar sempre els indicadors abans d'aprovar.</p></div>
+    </section>
+
+    <section id="obrir">
+      <div class="eyebrow">Accés</div>
+      <h2>Obrir l'aplicació</h2>
+      <p>Obriu l’adreça de la demostració al navegador i escolliu una pàgina del menú superior. Activeu <strong>Ajuda</strong> a la barra lateral per consultar els passos de la pantalla actual mentre treballeu.</p>
+      <p>La barra lateral mostra el nom de la base de dades activa i permet <strong>Actualitzar dades</strong> si un procés extern les ha modificat.</p>
+      <div class="callout info"><div class="symbol">i</div><p><strong>Actualitzar dades</strong> neteja la memòria temporal de la interfície i torna a llegir SQLite. No genera una planificació ni publica cap canvi.</p></div>
+
+    </section>
+
+    <section id="resum"><div class="eyebrow">Pàgina Resum</div><h2>Començar pel resum</h2><p>Obriu <strong>Resum</strong> i mireu <strong>Requereix atenció</strong>: serveis sense cobertura, baixes que finalitzen, incidències obertes i propostes pendents.</p><p>Els accessos <strong>Registrar incidència</strong> i <strong>Generar proposta</strong> us porten a la pantalla corresponent. L’activitat recent ajuda a saber què s’ha fet.</p></section><section id="planificacio">
+      <div class="eyebrow">Pestanya Planificació</div>
+      <h2>Crear i publicar una planificació</h2>
+      <div class="flow" aria-label="Flux de publicació d'una planificació">
+        <div class="step"><span class="dot">1</span><b>Generar</b><small>Crea un esborrany</small></div>
+        <div class="step"><span class="dot">2</span><b>Revisar</b><small>Assignacions i descoberts</small></div>
+        <div class="step"><span class="dot">3</span><b>Validar</b><small>No publica encara</small></div>
+        <div class="step"><span class="dot">4</span><b>Publicar</b><small>Substitueix el pla</small></div>
+      </div>
+
+<h3>1. Generar una proposta</h3><ol class="steps"><li>Obriu <strong>Planificació → Nova proposta</strong> i indiqueu les dates.</li><li>Si cal limitar els canvis, desplegueu <strong>Opcions de l’abast</strong>. Per a un càlcul habitual, mantingueu la configuració establerta.</li><li>Premeu <strong>Revisar abast</strong> i comproveu què es podrà modificar i què quedarà protegit.</li><li>Premeu <strong>Generar proposta</strong>. El resultat queda desat i encara no modifica el pla.</li></ol><h3>Limitar els canvis quan calgui</h3><table><thead><tr><th>Opció</th><th>Per a què serveix</th></tr></thead><tbody><tr><td>Serveis, persones o assignacions</td><td>Limita les assignacions que es poden revisar. Un selector buit no limita per aquell criteri.</td></tr><tr><td>Protegir fins a una data</td><td>Conserva les assignacions fins a aquell dia, inclòs.</td></tr><tr><td>Persones que poden rebre noves cobertures</td><td>Permet seguir el filtre de persones o obrir les cobertures a qualsevol persona elegible.</td></tr></tbody></table><div class="callout info"><div class="symbol">i</div><p>Seleccionar una persona al filtre no li assigna un servei. Per fixar una cobertura concreta, utilitzeu <strong>Preassignacions</strong>.</p></div><p>A <strong>Configuració avançada</strong> es poden ajustar les preferències de torn i zona, la penalització de ratxes de zona i els recursos de càlcul. Mantingueu els valors habituals si no teniu un motiu concret per canviar-los.</p><h3>Fixar una cobertura abans de calcular</h3><ol class="steps"><li>Obriu <strong>Planificació → Preassignacions</strong> i escolliu el període de reserva.</li><li>Seleccioneu la persona, els serveis amb els seus dies i el motiu.</li><li>Premeu <strong>Previsualitzar assignacions</strong> i reviseu el resultat.</li><li>Confirmeu i premeu <strong>Desar preassignacions</strong>. El pròxim càlcul les haurà de respectar.</li></ol><div class="callout info"><div class="symbol">i</div><p>Desar una preassignació no publica la cobertura. Si la reserva ja no correspon, seleccioneu-la a la llista d’actives i premeu <strong>Retirar preassignació</strong>.</p></div>      <h3>2. Interpretar el resultat</h3>
+<p>Reviseu la cobertura, els descoberts i l’impacte sobre les persones. Les vistes <strong>Canvis</strong>, <strong>Descoberts</strong> i <strong>Impacte i equitat</strong> permeten comprovar què es retiraria, què s’afegiria i com varia la càrrega.</p>      <div class="callout info"><div class="symbol">i</div><p><code>OPTIMAL</code> significa que el solver ha demostrat l'òptim de la fase. <code>FEASIBLE</code> significa que la solució compleix les restriccions rígides, però no s'ha demostrat que sigui la millor dins del temps disponible.</p></div>
+
+      <h3>3. Validar, publicar o descartar</h3>
+      <h4>Validar la proposta</h4>
+      <ol class="steps">
+        <li>Obriu <strong>Planificació → Revisar propostes</strong>, seleccioneu la proposta pendent i premeu <strong>Obrir proposta</strong>.</li>
+        <li>Reviseu les vistes <strong>Canvis</strong>, <strong>Descoberts</strong> i <strong>Impacte i equitat</strong>. Comproveu les dates, les assignacions que es retiren o s’afegeixen i l’impacte sobre les persones.</li>
+        <li>Si el resultat és correcte, marqueu <strong>Confirmo que he revisat els canvis i els descoberts</strong>.</li>
+        <li>Premeu <strong>Validar proposta</strong> i comproveu que passa a l’estat <strong>Validada</strong>.</li>
+      </ol>
+      <div class="callout safe"><div class="symbol">✓</div><p><strong>Validar encara no modifica el pla.</strong> La proposta queda preparada per publicar. Si una comprovació impedeix validar-la, reviseu el missatge abans de continuar.</p></div>
+      <h4>Publicar el bloc revisat</h4>
+      <ol class="steps">
+        <li>Amb la proposta <strong>Validada</strong> oberta, comproveu la data d’inici del següent bloc, que l’aplicació calcula automàticament.</li>
+        <li>A <strong>Publicar fins al dia</strong>, escolliu l’últim dia que voleu publicar. Reviseu que l’inici i el final corresponen al període que heu aprovat.</li>
+        <li>Marqueu <strong>Confirmo que vull publicar aquest bloc consecutiu</strong>. Si el resultat és <strong>FEASIBLE</strong>, la confirmació demana acceptar que no s’ha demostrat l’optimalitat.</li>
+        <li>Premeu <strong>Publicar bloc</strong> i espereu el missatge que confirma el període publicat.</li>
+        <li>Obriu <strong>Pla publicat</strong> per comprovar les assignacions oficials. Si queden dies pendents, torneu a la proposta per publicar el següent bloc quan correspongui.</li>
+      </ol>
+      <div class="callout danger"><div class="symbol">!</div><p><strong>Publicar sí modifica el pla.</strong> Només s’aplica el bloc seleccionat. Si apareix un error, no doneu la publicació per feta: reviseu el missatge i l’estat del pla.</p></div>
+      <div class="callout info"><div class="symbol">i</div><p>Si la pantalla ofereix <strong>Publicar canvis</strong> en lloc de publicar per blocs, reviseu l’abast complet, marqueu la confirmació corresponent i premeu aquest botó. En <strong>mode ombra</strong> es pot validar, però la publicació està desactivada.</p></div>
+      <h4>Descartar si no s’ha de publicar</h4>
+      <p>Si encara no s’ha publicat cap bloc, marqueu <strong>Confirmo que vull descartar aquesta proposta</strong> i premeu <strong>Descartar proposta</strong>. Es conserva a l’historial i el pla no canvia.</p>
+      <h4>Estats de la proposta</h4>
+
+      <table>
+        <thead><tr><th>Estat</th><th>Significat operatiu</th><th>Accions</th></tr></thead>
+        <tbody>
+          <tr><td><span class="status s-orange">Pendent de revisió</span></td><td>Esborrany desat; el pla no ha canviat.</td><td>Validar o descartar.</td></tr>
+          <tr><td><span class="status s-blue">Validada</span></td><td>Revisada i revalidada; pot tenir blocs inicials ja publicats.</td><td>Publicar el següent bloc o descartar si encara no se n'ha publicat cap.</td></tr>
+          <tr><td><span class="status s-green">Publicada</span></td><td>Aplicada al pla operatiu en una transacció.</td><td>Rollback si no hi ha canvis posteriors.</td></tr>
+          <tr><td><span class="status s-red">Descartada</span></td><td>Conservada per traçabilitat, però no utilitzable.</td><td>Cap acció operativa.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout danger"><div class="symbol">!</div><p><strong>La proposta es valida sencera i es publica per blocs consecutius.</strong> L'inici del següent bloc es calcula automàticament i l'operador n'escull la data final. Abans d'escriure, l'aplicació repeteix les comprovacions, crea una còpia de seguretat i aplica el bloc en una única transacció.</p></div>
+      <p>El <strong>rollback</strong> restaura només l'últim bloc, però es bloqueja si detecta canvis posteriors dins del mateix període. No confongueu aquest rollback amb l'aprovació d'una incidència, que és un circuit independent.</p>
+<h3>Reobrir una proposta</h3><p>A <strong>Planificació → Revisar propostes</strong>, consulteu les pendents o l’historial, seleccioneu la proposta i premeu <strong>Obrir proposta</strong>.</p><h3>Si apareix «Invalidada»</h3><p>El pla ha canviat i aquella proposta ja no es pot continuar publicant. Reviseu el motiu i premeu <strong>Crear nova proposta per al tram pendent</strong>.</p><div class="callout info"><div class="symbol">i</div><p>Els blocs ja publicats es conserven. La nova proposta recalcula el tram que encara falta amb les dades actuals.</p></div>    </section>
+
+<section id="oficial"><div class="eyebrow">Pàgina Pla publicat</div><h2>Consultar el pla que està en vigor</h2><ol class="steps"><li>Obriu <strong>Pla publicat</strong> i apliqueu els filtres que necessiteu.</li><li>Seleccioneu una fila per veure la procedència de l’assignació, les incidències, els canvis i els bloquejos relacionats.</li><li>Consulteu <strong>Historial de versions oficials</strong> si necessiteu seguir les publicacions.</li><li>Premeu <strong>Descarregar resultats (CSV)</strong> per obtenir les files filtrades.</li></ol><div class="callout info"><div class="symbol">i</div><p>Aquí només apareix el pla oficial. Les propostes pendents es revisen a Planificació.</p></div></section><section id="consulta">
+      <div class="eyebrow">Pàgina Personal</div>
+      <h2>Consultar sense modificar dades</h2>
+      <p>La pàgina <strong>Personal</strong> és de lectura i reuneix dues àrees:</p>
+      <div class="two">
+        <div class="card"><h3>Per treballador</h3><p>Cerqueu pel nom, la plaça o l'ID per consultar descansos i moviments.</p></div>
+        <div class="card"><h3>Disponibilitat i seguiment</h3><p>Disponibilitat d'un dia, calendari mensual, serveis descoberts, estadístiques, historial de canvis i alertes de baixes.</p></div>
+      </div>
+
+      <div class="callout warn"><div class="symbol">!</div><p>Les baixes, vacances i substitucions operatives s'han d'introduir sempre a <strong>Incidències</strong>. No dupliqueu el mateix fet en altres pantalles.</p></div>
+    </section>
+
+<section id="hores"><div class="eyebrow">Pàgina Hores realitzades</div><h2>Confirmar les hores realitzades</h2><p>Publicar un servei i confirmar-ne les hores són passos diferents. Feu el tancament quan hàgiu comprovat que el període correspon a la feina realitzada.</p><ol class="steps"><li>Obriu <strong>Hores realitzades → Tancar període</strong> i escolliu les dates.</li><li>Premeu <strong>Revisar el tancament</strong>. Comproveu les assignacions pendents, les ja confirmades i les hores noves.</li><li>Marqueu la confirmació i premeu <strong>Tancar … assignacions</strong>.</li></ol><div class="callout info"><div class="symbol">i</div><p>Les assignacions ja confirmades no es tornen a sumar. Si canvieu les dates, heu de tornar a revisar el tancament.</p></div><h3>Consultar o corregir</h3><p>A <strong>Consultar i corregir</strong>, escolliu l’any per veure les hores i els serveis confirmats del grup T, els canvis de torn i zona i els seus percentatges. Podeu desplegar el detall i consultar l’historial de tancaments.</p><p>Si un tancament és incorrecte, obriu <strong>Corregir un tancament</strong>, seleccioneu-lo, indiqueu el motiu i confirmeu <strong>Revertir el tancament</strong>. Les hores d’aquell tancament deixen de comptar com a realitzades; l’historial es conserva.</p></section><section id="cronograma"><div class="eyebrow">Pàgina Cronograma</div><h2>Veure els serveis al cronograma</h2><p>El cronograma s’obre des de <strong>Cronograma</strong>, al menú superior.</p><ol class="steps"><li>Agrupeu per zona o línia, o consulteu sense agrupació.</li><li>Cerqueu un servei o treballador i apliqueu els filtres necessaris.</li><li>Seleccioneu una casella per consultar-ne el detall.</li><li>A <strong>Superposició provisional</strong>, escolliu una proposta si voleu consultar també el tram encara no publicat.</li></ol><div class="legend"><span>🟢 Publicat</span><span>🔵 Provisional</span><span>🔴 Descobert</span><span>⚪ Pendent</span></div><div class="callout info"><div class="symbol">i</div><p>És una consulta: les caselles no es mouen ni publiquen canvis. Als trams ja publicats preval el pla oficial.</p></div></section><section id="xivato"><div class="eyebrow">Després de publicar</div><h2>Enviar els avisos del pilot Xivato</h2><p>Després d’una publicació, si el pilot està configurat, desplegueu <strong>Notificacions Xivato · pilot</strong> a la revisió de la proposta.</p><ol class="steps"><li>Premeu <strong>Preparar avisos Xivato</strong>. Es crea la llista, sense enviar-la.</li><li>Premeu <strong>Comprovar destinataris</strong> i reviseu les persones i els estats.</li><li>Confirmeu el nombre d’avisos previsualitzats i premeu <strong>Enviar avisos Xivato</strong>.</li></ol><div class="callout info"><div class="symbol">i</div><p>El circuit està limitat als treballadors del pilot indicats a la pantalla. Si falta un destinatari o hi ha un error, reviseu-lo abans d’enviar. Publicar el pla no envia els avisos automàticament.</p></div></section>    <section id="incidencies" class="incidents">
+      <div class="eyebrow">Atenció especial</div>
+      <h2>Gestió d'incidències</h2>
+      <p>La secció Incidències repara el pla publicat amb el mínim canvi possible. El procés és deliberadament separat en tres passos perquè es pugui registrar un fet, simular-ne l'impacte i revisar la decisió abans de modificar dades.</p>
+      <div class="flow" aria-label="Flux de gestió d'una incidència">
+        <div class="step"><span class="dot">1</span><b>Registrar</b><small>Què ha passat</small></div>
+        <div class="step"><span class="dot">2</span><b>Generar</b><small>Simulació CP-SAT</small></div>
+        <div class="step"><span class="dot">3</span><b>Revisar</b><small>Abans i després</small></div>
+        <div class="step"><span class="dot">4</span><b>Aplicar</b><small>Canvi atòmic</small></div>
+      </div>
+      <div class="callout safe"><div class="symbol">✓</div><p>Fins al pas final, la incidència i la seva proposta no alteren ni la disponibilitat ni les assignacions publicades.</p></div>
+
+    </section>
+
+    <section id="tipus" class="incidents">
+      <div class="eyebrow">Abans de registrar</div>
+      <h2>Escollir el tipus correcte</h2>
+      <table>
+        <thead><tr><th>Tipus</th><th>Quan s'utilitza</th><th>Efecte quan s'aprova</th><th>Dada especial</th></tr></thead>
+        <tbody>
+          <tr><td>Baixa</td><td>Absència mèdica o assimilada.</td><td>Marca la persona com a no disponible durant el període i repara les assignacions afectades.</td><td>Data inicial i final.</td></tr>
+          <tr><td>Vacances</td><td>Absència prevista.</td><td>Crea la no disponibilitat temporal i repara el pla afectat.</td><td>Data inicial i final.</td></tr>
+          <tr><td>Substitució</td><td>Una persona cobreix l'absència d'una altra.</td><td>Registra l'absència de l'original i prioritza el substitut indicat quan compleix les restriccions.</td><td>Cal seleccionar un substitut diferent.</td></tr>
+          <tr><td>Pròrroga de baixa</td><td>La baixa continua més enllà del període previst.</td><td>Afegeix el nou període de baixa i recalcula l'impacte.</td><td>Introduïu només el període ampliat.</td></tr>
+          <tr><td>Alta anticipada</td><td>La persona es reincorpora abans de la data prevista.</td><td>Retira la baixa dins del període tractat i pot recuperar necessitats que estaven descobertes.</td><td>La interfície actual demana una única data d'alta.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><div class="symbol">!</div><p><strong>Alta anticipada:</strong> com que la interfície actual demana una única data, reviseu també els dies posteriors al calendari de disponibilitat per confirmar que la reincorporació completa ha quedat reflectida.</p></div>
+      <h3>Substitució: controls especials</h3>
+      <ul class="checklist">
+        <li>El substitut ha de ser diferent de la persona afectada.</li>
+        <li>Ha de complir grup, habilitacions, disponibilitat, descans mínim i límits de planificació.</li>
+        <li>Un descans base es pot convertir en dia de treball quan s'aprova.</li>
+        <li>Una baixa, vacances, descans no base o una altra cobertura activa bloquegen l'aprovació.</li>
+      </ul>
+    </section>
+
+    <section id="registrar" class="incidents">
+      <div class="eyebrow">Incidències · Pas 1</div>
+      <h2>Registrar la incidència</h2>
+      <ol class="steps">
+        <li>Cerqueu la persona afectada pel nom, la plaça o l'ID i seleccioneu la coincidència correcta.</li>
+        <li>Seleccioneu el tipus d'incidència. En una substitució, seleccioneu també el substitut.</li>
+        <li>Indiqueu la data de comunicació i el període afectat. En una alta anticipada, indiqueu la data d'alta.</li>
+        <li>Afegiu un motiu o observació que faciliti la traçabilitat.</li>
+        <li>Marqueu la confirmació i premeu <strong>Registrar incidència</strong>.</li>
+      </ol>
+
+      <div class="callout info"><div class="symbol">i</div><p>Després de registrar, la incidència queda en estat <span class="status s-orange">registrada</span>. Encara no hi ha cap dia de baixa ni cap assignació anul·lada.</p></div>
+    </section>
+
+    <section id="generar" class="incidents">
+      <div class="eyebrow">Incidències · Pas 2</div>
+      <h2>Generar la proposta CP-SAT</h2>
+      <ol class="steps">
+        <li>Obriu <strong>2. Preparar reparació</strong>.</li>
+        <li>Seleccioneu una incidència oberta a <strong>Incidència per preparar</strong>.</li>
+        <li>Premeu <strong>Preparar reparació CP-SAT</strong>.</li>
+        <li>Espereu que finalitzi. La proposta queda com a esborrany i el pla publicat continua intacte.</li>
+      </ol>
+
+      <h3>Què intenta fer el motor</h3>
+      <ul class="checklist">
+        <li>Mantenir totes les assignacions publicades que no estan afectades.</li>
+        <li>Reassignar només els serveis afectats per la incidència.</li>
+        <li>Prioritzar cobertura, restriccions rígides i estabilitat del pla.</li>
+        <li>Preferir el substitut indicat quan és vàlid.</li>
+        <li>En una alta anticipada, recuperar necessitats descobertes quan és possible.</li>
+      </ul>
+      <p>Quan es torna a generar una incidència que ja té un esborrany, s'actualitza la simulació pendent en lloc de publicar res.</p>
+    </section>
+
+    <section id="revisar" class="incidents">
+      <div class="eyebrow">Incidències · Pas 3</div>
+      <h2>Revisar i aplicar la proposta</h2>
+      <p>Seleccioneu la proposta a <strong>3. Revisar i aplicar</strong>. La decisió s'ha de basar en quatre indicadors:</p>
+      <table>
+        <thead><tr><th>Indicador</th><th>Interpretació</th></tr></thead>
+        <tbody>
+          <tr><td>Cobertura proposada</td><td>Necessitats cobertes respecte del total dins del problema de replanificació.</td></tr>
+          <tr><td>Serveis descoberts</td><td>Necessitats que continuaran sense persona assignada si s'aprova.</td></tr>
+          <tr><td>Assignacions modificades</td><td>Assignacions actuals que quedaran anul·lades o substituïdes.</td></tr>
+          <tr><td>Cobertures proposades</td><td>Noves assignacions que el CP-SAT publicarà.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn"><div class="symbol">!</div><p><strong>Una proposta pot ser vàlida amb descoberts.</strong> En l'exemple, la proposta compleix les restriccions rígides, però deixa 3 serveis sense cobertura. L'aprovació no està pensada per ocultar aquest risc: l'avís és explícit.</p></div>
+
+      <h3>Llegir «Abans i després»</h3>
+      <div class="legend">
+        <span><i class="orange"></i>Assignació actual afectada</span>
+        <span><i class="green"></i>Cobertura proposada</span>
+        <span><i class="red"></i>Servei descobert</span>
+        <span><i class="gray"></i>Pendent</span>
+      </div>
+      <p>Cada línia compara el <strong>Pla publicat</strong> amb la <strong>Proposta CP-SAT</strong>. Passeu el cursor pels punts per veure la persona, l'horari i la zona. La taula <strong>Impacte sobre els treballadors</strong> resumeix assignacions retirades, afegides, saldo d'hores i dates afectades.</p>
+
+
+      <h3>Checklist abans d'aprovar</h3>
+      <ul class="checklist">
+        <li>La persona, el tipus i el període són correctes.</li>
+        <li>S'han revisat tots els serveis descoberts.</li>
+        <li>Les persones proposades són operativament adequades.</li>
+        <li>S'han revisat les hores afegides i retirades.</li>
+        <li>En una substitució, el substitut indicat és el correcte.</li>
+        <li>No hi ha hagut una altra modificació del pla mentre es revisava.</li>
+      </ul>
+      <p>Si la decisió és correcta, marqueu <strong>Confirmo que he revisat la proposta</strong> i premeu <strong>Aprovar i aplicar reparació al pla vigent</strong>.</p>
+      <div class="callout danger"><div class="symbol">!</div><p><strong>Aquest botó sí modifica dades.</strong> En una única transacció registra la disponibilitat, anul·la les assignacions afectades, publica les cobertures noves, actualitza l'històric i tanca incidència i proposta com a aprovades.</p></div>
+
+      <h3>Controls automàtics en aprovar</h3>
+      <ul class="checklist no-list">
+        <li>Si el pla publicat ha canviat, l'aprovació es bloqueja i cal recalcular.</li>
+        <li>Si una persona proposada ja no compleix les restriccions rígides, es bloqueja.</li>
+        <li>Si una substitució té conflictes de disponibilitat, es bloqueja.</li>
+        <li>Si falla qualsevol escriptura, es desfà tota l'operació.</li>
+        <li>Els serveis descoberts no sempre bloquegen; per això la revisió humana és obligatòria.</li>
+      </ul>
+
+      <h3>Estats del circuit d'incidències</h3>
+      <table>
+        <thead><tr><th>Element</th><th>Estat</th><th>Significat</th></tr></thead>
+        <tbody>
+          <tr><td>Incidència</td><td><span class="status s-orange">registrada</span></td><td>Fet registrat, encara sense simulació.</td></tr>
+          <tr><td>Incidència</td><td><span class="status s-blue">en proposta</span></td><td>Ja té una proposta pendent de decisió.</td></tr>
+          <tr><td>Proposta</td><td><span class="status s-orange">esborrany</span></td><td>Calculada, però encara no aplicada.</td></tr>
+          <tr><td>Incidència i proposta</td><td><span class="status s-green">aprovada</span></td><td>Canvis aplicats i traçats a l'auditoria.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout info"><div class="symbol">i</div><p>L'aprovació d'incidències és <strong>incremental</strong>: només tracta el període i els serveis afectats. No és la mateixa operació que publicar una planificació inicial completa.</p></div>
+<h3>Si no cal canviar cap cobertura</h3><p>La pantalla ofereix <strong>Aplicar incidència sense canvis de cobertura</strong>. Reviseu igualment la persona, el tipus i les dates abans de confirmar.</p><h3>Eliminar una reparació pendent</h3><p>Desplegueu <strong>Eliminar aquesta reparació</strong>, confirmeu i premeu <strong>Eliminar reparació</strong>. Només s’elimina l’esborrany: la incidència queda disponible per preparar-ne un altre i el pla publicat es conserva.</p><div class="callout info"><div class="symbol">i</div><p>Si apareix <strong>Mode ombra actiu</strong>, podeu consultar la reparació, però no aplicar-la al pla.</p></div>    </section>
+
+    <section id="problemes">
+      <div class="eyebrow">Ajuda</div>
+      <h2>Problemes habituals</h2>
+      <table>
+        <thead><tr><th>Símptoma</th><th>Causa probable</th><th>Acció recomanada</th></tr></thead>
+        <tbody>
+          <tr><td>No es pot registrar</td><td>Falta persona, data inicial/final, substitut o confirmació.</td><td>Reviseu tots els camps i torneu a confirmar.</td></tr>
+          <tr><td>La data final és anterior</td><td>Període incoherent.</td><td>Corregiu les dates; el sistema no permet registrar-lo.</td></tr>
+          <tr><td>No es pot aprovar</td><td>El pla ha canviat des de la simulació.</td><td>Torneu a generar la proposta sobre les dades actuals.</td></tr>
+          <tr><td>Restriccions rígides</td><td>La persona proposada ha deixat de ser compatible.</td><td>Actualitzeu les dades i recalculeu; no forceu l'aprovació.</td></tr>
+          <tr><td>Conflicte de substitució</td><td>El substitut té una altra indisponibilitat o cobertura.</td><td>Reviseu el calendari i seleccioneu una altra opció.</td></tr>
+          <tr><td>Proposta vàlida amb descoberts</td><td>No existeixen prou candidats compatibles.</td><td>Reviseu els serveis vermells i decidiu el tractament operatiu abans d'aprovar.</td></tr>
+          <tr><td>Falta OR-Tools</td><td>L'entorn no té el solver instal·lat.</td><td>Utilitzeu l'entorn virtual del projecte o reinstal·leu les dependències.</td></tr>
+          <tr><td>Error de caràcters a Windows</td><td>La consola no està treballant en UTF-8.</td><td>Abans d'arrencar: <code>$env:PYTHONUTF8=1</code> i torneu a iniciar Streamlit.</td></tr>
+
+          <tr><td>El rollback està bloquejat</td><td>Hi ha canvis posteriors al mateix període.</td><td>No forceu la reversió automàtica; reviseu manualment els canvis posteriors.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="checklist" class="quick">
+      <div class="eyebrow" style="color:#ffb8bd">Resum operatiu</div>
+      <h2>Checklist diari</h2><p>Comenceu pel <strong>Resum</strong>. Després de publicar, comproveu el <strong>Pla publicat</strong>. Quan el període estigui revisat, confirmeu les <strong>Hores realitzades</strong>.</p>
+      <div class="two">
+        <div>
+          <h3>Planificació</h3>
+          <ul class="checklist">
+            <li>Escollir el període correcte.</li>
+            <li>Generar i revisar assignacions.</li>
+            <li>Revisar descoberts i comprovacions.</li>
+            <li>Comprovar l’impacte per treballador.</li>
+            <li>Validar; després, confirmar i publicar.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Incidència</h3>
+          <ul class="checklist">
+            <li>Registrar-la una sola vegada.</li>
+            <li>Generar la proposta CP-SAT.</li>
+            <li>Revisar cobertura i abans/després.</li>
+            <li>Comprovar descoberts i impacte d'hores.</li>
+            <li>Confirmar i aplicar només amb decisió responsable.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="glossari">
+      <div class="eyebrow">Referència ràpida</div>
+      <h2>Glossari</h2>
+      <table>
+        <tbody>
+          <tr><td>CP-SAT</td><td>Motor d'optimització que busca una assignació compatible amb les restriccions.</td></tr>
+          <tr><td>Necessitat</td><td>Servei que requereix una persona en una data i horari determinats.</td></tr>
+          <tr><td>Servei descobert</td><td>Necessitat que no ha pogut rebre cap assignació vàlida.</td></tr>
+          <tr><td>Restricció rígida</td><td>Regla que no es pot vulnerar, com determinats descansos, conflictes o habilitacions.</td></tr>
+          <tr><td>Esborrany</td><td>Proposta desada que encara no modifica el pla.</td></tr>
+          <tr><td>Validar</td><td>Confirmar que una proposta completa és coherent; no equival a publicar.</td></tr>
+          <tr><td>Publicar</td><td>Aplicar els canvis revisats al període o al bloc seleccionat.</td></tr>
+          <tr><td>Aprovar incidència</td><td>Aplicar només els canvis incrementals revisats d'una incidència.</td></tr>
+          <tr><td>Snapshot</td><td>Fotografia interna del pla que permet detectar canvis produïts després de generar una proposta.</td></tr>
+          <tr><td>Rollback</td><td>Restauració controlada de l’últim bloc publicat quan els controls ho permeten.</td></tr>
+        </tbody>
+      </table>
+
+    </section>
+
+    <div class="footer">
+      <span>Planificador de cobertures CP-SAT · Guia d'usuari final</span>
+      <span>Guia d’usuari · 12/09/2026</span>
+    </div>
+  </div>
+  </main>
+</div>
+</body>
+</html>

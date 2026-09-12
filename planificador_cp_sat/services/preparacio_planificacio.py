@@ -28,7 +28,7 @@ if str(PILOT_SRC) not in sys.path:
 
 from cp_sat_pilot import (  # noqa: E402
     Assignment,
-    CpSatPlanner,
+    PlannerCore,
     HistoricalAssignment,
     Need,
     PlanningProblem,
@@ -304,7 +304,7 @@ def _validate_locked_assignments(problem: PlanningProblem) -> None:
         for assignment in problem.reference_assignments
         if assignment.need_id in problem.locked_need_ids
     )
-    errors = CpSatPlanner(problem).validate(locked)
+    errors = PlannerCore(problem).validate(locked)
     if errors:
         raise PlanningProblemPreparationError(
             "Les assignacions protegides ja no compleixen les restriccions "
@@ -336,7 +336,7 @@ def _validate_required_assignments(problem: PlanningProblem) -> None:
         if assignment.need_id in problem.locked_need_ids
         and assignment.need_id not in required_by_need
     )
-    errors = CpSatPlanner(problem).validate(assignments)
+    errors = PlannerCore(problem).validate(assignments)
     if errors:
         raise PlanningProblemPreparationError(
             "Les preassignacions no compleixen les restriccions dures: "
@@ -426,6 +426,14 @@ def prepare_planning_problem(
             worker,
             rest_dates=(
                 worker.rest_dates
+                - {
+                    day
+                    for worker_id, day in released
+                    if worker_id == worker.id
+                }
+            ),
+            base_rest_dates=(
+                worker.base_rest_dates
                 - {
                     day
                     for worker_id, day in released

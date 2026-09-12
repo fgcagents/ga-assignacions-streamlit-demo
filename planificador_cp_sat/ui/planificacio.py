@@ -18,9 +18,6 @@ from planificador_cp_sat.services.desplegament_planificacio import (
     load_planning_rollout_config,
     planning_shadow_report,
 )
-from planificador_cp_sat.services.esquema_planificacio import (
-    migrate_planning_schema,
-)
 from planificador_cp_sat.services.persistencia_planificacio import (
     PlanningExecutionStaleError,
     StoredPlanningExecution,
@@ -30,9 +27,14 @@ from planificador_cp_sat.services.persistencia_planificacio import (
     save_planning_proposal,
     validate_planning_execution,
 )
+from planificador_cp_sat.ui.notificacions_xivato import (
+    render_xivato_pilot as _render_xivato_pilot,
+)
 from planificador_cp_sat.services.publicacio_planificacio import (
     apply_planning_changeset,
+    invalidate_stale_planning_executions,
     planning_publication_progress,
+    planning_publication_staleness,
 )
 from planificador_cp_sat.services.planificacio_selectiva import (
     SelectivePlanningError,
@@ -57,6 +59,7 @@ SELECTIVE_PREVIEW_KEY = "planificacio_selectiva_previsualitzacio"
 WORKSPACE_VIEW_KEY = "planificacio_espai_treball"
 WORKSPACE_VIEW_OVERRIDE_KEY = "planificacio_espai_treball_seguent"
 SCOPE_REVIEW_KEY = "planificacio_abast_revisat"
+NEW_SCOPE_OVERRIDE_KEY = "planificacio_nou_abast_seguent"
 
 VIEW_NEW_PROPOSAL = "Nova proposta"
 VIEW_SAVED_PROPOSALS = "Revisar propostes"
@@ -1027,6 +1030,7 @@ def _execution_presentation(
         "validada": "Validada",
         "publicada": "Publicació completada",
         "descartada": "Descartada",
+        "invalidada": "Invalidada",
         "revertida": "Revertida",
     }
     state = "obsoleta" if stale_message else execution.state
@@ -1145,9 +1149,33 @@ def _render_scope_plan_summary(summary: dict) -> None:
         )
 
 
+def _render_replacement_proposal_action(
+    execution_id: int,
+    pending_start: date,
+    pending_end: date,
+) -> None:
+    if st.button(
+        "Crear nova proposta per al tram pendent",
+        icon=":material/restart_alt:",
+        type="primary",
+        key=f"planning_replace_stale_{execution_id}",
+    ):
+        st.session_state[NEW_SCOPE_OVERRIDE_KEY] = {
+            "start": pending_start.isoformat(),
+            "end": pending_end.isoformat(),
+        }
+        st.session_state[WORKSPACE_VIEW_OVERRIDE_KEY] = VIEW_NEW_PROPOSAL
+        st.session_state.pop(EXECUTION_ID_KEY, None)
+        st.session_state.pop(SCOPE_REVIEW_KEY, None)
+        st.session_state.pop(STALE_KEY, None)
+        st.rerun()
+
+
 def _render_incremental_actions(
     db_path: str | Path,
     execution: StoredPlanningExecution,
+    *,
+    staleness: dict | None = None,
 ) -> None:
     rollout = load_planning_rollout_config()
     assessment = getattr(execution, "metrics", {}).get(
@@ -1171,7 +1199,8 @@ def _render_incremental_actions(
     if selected_engine is SolverEngine.PRIORITY or execution.state == "publicada":
         progress = planning_publication_progress(db_path, execution.id)
     has_published_blocks = progress["publication_count"] > 0
-    if has_published_blocks:
+    is_stale = bool(staleness and staleness["stale"])
+    if has_published_blocks and execution.state != "invalidada" and not is_stale:
         st.info(
             "Publicat fins al "
             f"**{_data_llegible(progress['published_until'])}** en "
@@ -1205,7 +1234,55 @@ def _render_incremental_actions(
             except (sqlite3.Error, ValueError) as error:
                 st.error(str(error))
 
-    if execution.state == "validada":
+    if (
+        execution.state in {"validada", "invalidada"}
+        and staleness
+        and staleness["stale"]
+    ):
+        pending_start = staleness["next_start"]
+        pending_end = execution.request.scope.end_date
+        st.error(
+            "Aquesta proposta està invalidada perquè el pla ha canviat "
+            "després de l'últim bloc. Es conserva el que ja s'ha publicat "
+            f"fins al {_data_llegible(progress['published_until'])}; el tram "
+            f"{_data_llegible(pending_start)} – {_data_llegible(pending_end)} "
+            "necessita una proposta nova."
+        )
+        if staleness["events"]:
+            labels = []
+            for event in staleness["events"]:
+                origin = (
+                    f"Incidència #{event['origen_id']}"
+                    if event["origen"] == "incidencia"
+                    else f"P-{event['execucio_id']}"
+                )
+                overlap = " · coincideix amb el tram pendent" if event[
+                    "overlaps_pending"
+                ] else ""
+                labels.append(
+                    f"{origin} ({_data_llegible(event['data_inici'])} – "
+                    f"{_data_llegible(event['data_fi'])}){overlap}"
+                )
+            with st.expander("Canvis que han invalidat la proposta"):
+                st.markdown("\n".join(f"- {label}" for label in labels))
+        _render_replacement_proposal_action(
+            execution.id,
+            pending_start,
+            pending_end,
+        )
+
+    elif execution.state == "invalidada":
+        st.error(
+            "Aquesta proposta està invalidada i ja no es pot publicar. Cal "
+            "generar-la de nou amb les dades actuals."
+        )
+        _render_replacement_proposal_action(
+            execution.id,
+            execution.request.scope.start_date,
+            execution.request.scope.end_date,
+        )
+
+    elif execution.state == "validada":
         if publishable and not optimality_certified:
             st.warning(
                 "Resultat FEASIBLE: compleix les restriccions dures, però "
@@ -1301,6 +1378,7 @@ def _render_incremental_actions(
             f"{_data_llegible(audit.end_date)} · "
             f"còpia de seguretat: {Path(audit.backup_path).name}"
         )
+        _render_xivato_pilot(db_path, audit)
         confirmed = st.checkbox(
             "Confirmo que vull revertir només l'últim bloc publicat",
             key=f"planning_rollback_confirm_{execution.id}",
@@ -1323,12 +1401,19 @@ def _render_incremental_execution(
     db_path: str | Path,
     execution: StoredPlanningExecution,
 ) -> None:
+    staleness = None
+    if execution.state in {"validada", "invalidada"}:
+        staleness = planning_publication_staleness(db_path, execution.id)
     stale_message = st.session_state.get(STALE_KEY)
     view = _execution_presentation(execution, stale_message=stale_message)
     selected_engine = normalize_solver_engine(
         execution.configuration.get("solver_engine", SolverEngine.CURRENT)
     )
     st.subheader(f"Revisió P-{execution.id}")
+    preference = execution.configuration.get("preference_priority")
+    if preference:
+        from planificador_cp_sat.services.preferencies_solver import PREFERENCE_PROFILES
+        st.caption(f"Preferències: {PREFERENCE_PROFILES.get(preference, ('Personalitzada',))[0]}")
     st.caption(
         f"{_data_llegible(execution.request.scope.start_date)} – "
         f"{_data_llegible(execution.request.scope.end_date)} · "
@@ -1374,7 +1459,9 @@ def _render_incremental_execution(
     )
     equity_assessment = view["equity_assessment"]
     optimality_certified = equity_assessment.get("technical_ready", False)
-    if optimality_certified and not equity_assessment.get("review_worker_ids", ()):
+    if execution.state == "invalidada":
+        pass
+    elif optimality_certified and not equity_assessment.get("review_worker_ids", ()):
         if selected_engine is SolverEngine.PRIORITY:
             st.success(
                 "Totes les fases del motor per prioritats han acabat en estat "
@@ -1526,7 +1613,11 @@ def _render_incremental_execution(
                 )
 
     st.markdown("#### Decisió")
-    _render_incremental_actions(db_path, execution)
+    _render_incremental_actions(
+        db_path,
+        execution,
+        staleness=staleness,
+    )
 
 
 def _planning_execution_rows(executions: list[StoredPlanningExecution]) -> list[dict]:
@@ -1582,7 +1673,12 @@ def _render_saved_proposals(
     pending = [
         item
         for item in executions
-        if item.state not in {"descartada", "publicada", "revertida"}
+        if item.state not in {
+            "descartada",
+            "invalidada",
+            "publicada",
+            "revertida",
+        }
     ]
     history = [item for item in executions if item not in pending]
     if pending:
@@ -1644,6 +1740,9 @@ def _scope_review_payload(
     num_workers: int,
     force_seeds: bool,
     solver_engine: SolverEngine | str,
+    preference_priority: str = "torn",
+    zone_streak_enabled: bool = True,
+    zone_streak_threshold: int = 3,
 ) -> dict:
     return {
         "start": start.isoformat(),
@@ -1657,6 +1756,9 @@ def _scope_review_payload(
         "num_workers": int(num_workers),
         "force_seeds": bool(force_seeds),
         "solver_engine": normalize_solver_engine(solver_engine).value,
+        "preference_priority": preference_priority,
+        "zone_streak_enabled": bool(zone_streak_enabled),
+        "zone_streak_threshold": int(zone_streak_threshold),
     }
 
 
@@ -1687,6 +1789,8 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
     view_override = st.session_state.pop(WORKSPACE_VIEW_OVERRIDE_KEY, None)
     if view_override is not None:
         st.session_state[WORKSPACE_VIEW_KEY] = view_override
+    if st.session_state.get(WORKSPACE_VIEW_KEY) == "Pla anual":
+        st.session_state[WORKSPACE_VIEW_KEY] = VIEW_NEW_PROPOSAL
     workspace_view = st.segmented_control(
         "Què vols fer?",
         (VIEW_NEW_PROPOSAL, VIEW_SAVED_PROPOSALS, VIEW_PREASSIGNMENTS),
@@ -1700,7 +1804,7 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
     if notice:
         st.success(notice)
     try:
-        migrate_planning_schema(db_path)
+        invalidate_stale_planning_executions(db_path)
         executions = list_planning_executions(db_path)
     except (sqlite3.Error, ValueError) as error:
         st.error(f"No s'ha pogut preparar la planificació: {error}")
@@ -1734,6 +1838,17 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
             selective_options,
         )
         return
+
+    scope_override = st.session_state.pop(NEW_SCOPE_OVERRIDE_KEY, None)
+    if scope_override:
+        st.session_state.pop("planning_start", None)
+        st.session_state.pop("planning_end", None)
+        st.session_state["planning_start"] = date.fromisoformat(
+            scope_override["start"]
+        )
+        st.session_state["planning_end"] = date.fromisoformat(
+            scope_override["end"]
+        )
 
     try:
         filter_options = _planning_filter_options(db_path, minimum, maximum)
@@ -1840,6 +1955,14 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 recipient_scope == "Qualsevol persona elegible"
             )
         with st.expander("Configuració avançada", icon=":material/tune:"):
+            from planificador_cp_sat.services.preferencies_solver import PREFERENCE_PROFILES, preference_weights
+            preference_priority = st.selectbox("Prioritat de preferències", list(PREFERENCE_PROFILES),
+                format_func=lambda key: PREFERENCE_PROFILES[key][0], key="planning_preference_priority")
+            _, turn_weight, zone_weight = PREFERENCE_PROFILES[preference_priority]
+            st.caption(f"Pes torn: {turn_weight} · Pes zona: {zone_weight}. Mateix pes no implica el mateix percentatge de canvis.")
+            zone_streak_enabled = st.checkbox("Penalitzar ratxes de zona", value=True)
+            zone_streak_threshold = st.number_input("Canvis consecutius abans de penalitzar", 0, 20, 3, key="zone_streak_threshold")
+            st.caption("Si estan activades, les ratxes de zona tenen prioritat sobre aquests pesos. La cobertura, les hores i les restriccions es mantenen.")
             time_column, workers_column = st.columns(2)
             with time_column:
                 time_limit = st.number_input(
@@ -1912,6 +2035,9 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                 num_workers=num_workers,
                 force_seeds=force_seeds,
                 solver_engine=solver_engine,
+                preference_priority=preference_priority,
+                zone_streak_enabled=zone_streak_enabled,
+                zone_streak_threshold=zone_streak_threshold,
             )
             st.rerun()
 
@@ -1947,6 +2073,8 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
             "aquesta configuració revisada. "
             f"Motor: **{solver_engine_label(reviewed_scope.get('solver_engine', SolverEngine.PRIORITY))}**."
         )
+        reviewed_preference = reviewed_scope.get("preference_priority", "torn")
+        st.caption(f"Preferències: {PREFERENCE_PROFILES[reviewed_preference][0]}")
         with st.container(horizontal=True):
             st.metric(
                 "Necessitats",
@@ -1994,7 +2122,7 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
             "solver_engine", SolverEngine.PRIORITY.value
         )
         try:
-            from cp_sat_pilot import SolverConfig
+            from cp_sat_pilot import PriorityPolicy, SolverConfig
             from planificador_cp_sat.domain import (
                 PlanningExecutionRequest,
                 PlanningScope,
@@ -2032,6 +2160,11 @@ def render_pestanya_planificacio_cp_sat(db_path: str | Path) -> None:
                         max_time_seconds=float(time_limit),
                         num_workers=int(num_workers),
                         random_seed=0,
+                        priority_policy=PriorityPolicy(
+                            reviewed_scope.get("zone_streak_enabled", True),
+                            int(reviewed_scope.get("zone_streak_threshold", 3)),
+                        ),
+                        soft_weights=preference_weights(reviewed_scope.get("preference_priority", "torn")),
                     ),
                     seeds=(0, 1, 2),
                     force_all_seeds=force_seeds,

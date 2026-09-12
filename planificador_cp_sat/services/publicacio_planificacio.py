@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from cp_sat_pilot import Assignment, CpSatPlanner
+from cp_sat_pilot import Assignment, PlannerCore
 
 from planificador_cp_sat.services.esquema_planificacio import (
     migrate_planning_schema,
@@ -175,6 +175,116 @@ def planning_publication_progress(
         execution = _load_with_connection(connection, execution_id)
         publications = _active_publications(connection, execution_id)
         return _publication_progress(execution, publications)
+
+
+def planning_publication_staleness(
+    database_path: str | Path,
+    execution_id: int,
+) -> dict[str, Any]:
+    """Detecta canvis oficials posteriors a l'últim bloc publicat."""
+    migrate_planning_schema(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        execution = _load_with_connection(connection, execution_id)
+        publications = _active_publications(connection, execution_id)
+        progress = _publication_progress(execution, publications)
+        if not publications:
+            return {"stale": False, "events": (), **progress}
+
+        last_publication = publications[-1]
+        stale = (
+            _operational_hash(connection, execution)
+            != last_publication["snapshot_posterior_hash"]
+        )
+        if not stale:
+            return {"stale": False, "events": (), **progress}
+
+        rows = connection.execute(
+            """
+            SELECT p.id AS publication_id, p.execucio_id, p.data_inici,
+                   p.data_fi, e.origen, e.origen_id
+            FROM publicacions_planificacio_cp_sat p
+            JOIN execucions_planificacio_cp_sat e ON e.id = p.execucio_id
+            WHERE p.id > ? AND p.execucio_id <> ?
+              AND p.reverted_at IS NULL
+              AND p.data_inici <= ? AND p.data_fi >= ?
+            ORDER BY p.id
+            """,
+            (
+                last_publication["id"],
+                execution_id,
+                execution.request.scope.end_date.isoformat(),
+                execution.request.scope.start_date.isoformat(),
+            ),
+        ).fetchall()
+        pending_start = progress["next_start"]
+        events = tuple(
+            {
+                **dict(row),
+                "overlaps_pending": bool(
+                    pending_start
+                    and date.fromisoformat(row["data_fi"]) >= pending_start
+                ),
+            }
+            for row in rows
+        )
+        return {"stale": True, "events": events, **progress}
+
+
+def _invalidate_stale_validated_executions(
+    connection: sqlite3.Connection,
+    *,
+    exclude_execution_id: int | None = None,
+) -> tuple[int, ...]:
+    """Invalida propostes parcials si el pla ja no coincideix."""
+    query = """
+        SELECT DISTINCT e.id
+        FROM execucions_planificacio_cp_sat e
+        JOIN publicacions_planificacio_cp_sat p ON p.execucio_id = e.id
+        WHERE e.estat = 'validada' AND p.reverted_at IS NULL
+    """
+    parameters: tuple[int, ...] = ()
+    if exclude_execution_id is not None:
+        query += " AND e.id <> ?"
+        parameters = (exclude_execution_id,)
+    invalidated = []
+    for row in connection.execute(query, parameters).fetchall():
+        execution_id = int(row[0])
+        execution = _load_with_connection(connection, execution_id)
+        publications = _active_publications(connection, execution_id)
+        if (
+            publications
+            and _operational_hash(connection, execution)
+            != publications[-1]["snapshot_posterior_hash"]
+        ):
+            updated = connection.execute(
+                """
+                UPDATE execucions_planificacio_cp_sat
+                SET estat = 'invalidada'
+                WHERE id = ? AND estat = 'validada'
+                """,
+                (execution_id,),
+            )
+            if updated.rowcount == 1:
+                invalidated.append(execution_id)
+    return tuple(invalidated)
+
+
+def invalidate_stale_planning_executions(
+    database_path: str | Path,
+) -> tuple[int, ...]:
+    """Actualitza l'estat formal de les propostes parcials obsoletes."""
+    migrate_planning_schema(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            invalidated = _invalidate_stale_validated_executions(connection)
+            connection.commit()
+            return invalidated
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _create_backup(
@@ -386,6 +496,8 @@ def apply_planning_changeset(
         engine = normalize_solver_engine(
             stored.configuration.get("solver_engine", SolverEngine.CURRENT.value)
         )
+        if engine is SolverEngine.ANNUAL:
+            raise PlanningExecutionPersistenceError("El roadmap anual no es publica directament")
         publications = _active_publications(connection, execution_id)
         progress = _publication_progress(stored, publications)
         if progress["complete"]:
@@ -442,7 +554,7 @@ def apply_planning_changeset(
             prepared.problem,
             segment_changes,
         )
-        errors = CpSatPlanner(prepared.problem).validate(final_assignments)
+        errors = PlannerCore(prepared.problem).validate(final_assignments)
         if errors:
             raise PlanningExecutionPersistenceError(
                 "El pla final no supera les restriccions dures: "
@@ -623,6 +735,10 @@ def apply_planning_changeset(
             start_date=segment_start.isoformat(),
             end_date=segment_end.isoformat(),
         )
+        invalidated_execution_ids = _invalidate_stale_validated_executions(
+            connection,
+            exclude_execution_id=execution_id,
+        )
         connection.commit()
         return {
             "publication_id": publication_id,
@@ -635,7 +751,21 @@ def apply_planning_changeset(
             "new_assignment_ids": tuple(new_assignment_ids),
             "final_snapshot_hash": operational_after,
             "backup_path": str(backup_path),
+            "invalidated_execution_ids": invalidated_execution_ids,
         }
+    except PlanningExecutionStaleError:
+        connection.rollback()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            UPDATE execucions_planificacio_cp_sat
+            SET estat = 'invalidada'
+            WHERE id = ? AND estat = 'validada'
+            """,
+            (execution_id,),
+        )
+        connection.commit()
+        raise
     except Exception:
         connection.rollback()
         raise

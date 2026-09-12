@@ -48,6 +48,18 @@ def build_scaled_problem(
     scaled_dates = frozenset(need.date for need in scaled_needs)
     base_dates = frozenset(need.date for need in problem.needs)
 
+    def replicate_dates(dates):
+        return frozenset(
+            {day for day in dates if day not in scaled_dates}
+        ).union(
+            {
+                day + offset
+                for day in dates
+                if day in base_dates
+                for offset in offsets
+            }
+        )
+
     removed_history = tuple(
         assignment
         for assignment in problem.history
@@ -66,20 +78,8 @@ def build_scaled_problem(
     workers = tuple(
         replace(
             worker,
-            rest_dates=frozenset(
-                {
-                    rest_date
-                    for rest_date in worker.rest_dates
-                    if rest_date not in scaled_dates
-                }
-            ).union(
-                {
-                    rest_date + offset
-                    for rest_date in worker.rest_dates
-                    if rest_date in base_dates
-                    for offset in offsets
-                }
-            ),
+            rest_dates=replicate_dates(worker.rest_dates),
+            base_rest_dates=replicate_dates(worker.base_rest_dates),
             annual_minutes=max(
                 0,
                 worker.annual_minutes - removed_minutes[worker.id],

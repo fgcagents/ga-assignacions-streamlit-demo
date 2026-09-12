@@ -5,7 +5,7 @@ from time import monotonic
 from typing import Iterable
 
 from .domain import SolveResult
-from .model import CpSatPlanner, SolverConfig
+from .model import PlannerCore, SolverConfig
 from .stability import assignment_fingerprint
 
 
@@ -245,7 +245,7 @@ def select_best_result(
 
 
 def solve_multi_start(
-    planner: CpSatPlanner,
+    planner: PlannerCore,
     config: SolverConfig,
     seeds: Iterable[int],
 ) -> MultiStartSelection:
@@ -270,7 +270,7 @@ def solve_multi_start(
 
 
 def solve_adaptive_multi_start(
-    planner: CpSatPlanner,
+    planner: PlannerCore,
     config: SolverConfig,
     seeds: Iterable[int],
     *,

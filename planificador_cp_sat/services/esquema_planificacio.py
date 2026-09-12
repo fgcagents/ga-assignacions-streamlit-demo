@@ -10,12 +10,13 @@ from datetime import time
 from pathlib import Path
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 EXECUTION_STATES = (
     "esborrany",
     "validada",
     "publicada",
     "descartada",
+    "invalidada",
     "revertida",
 )
 
@@ -311,6 +312,51 @@ def _migrate_partial_publications(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_invalidated_execution_state(
+    connection: sqlite3.Connection,
+) -> None:
+    """Afegeix l'estat invalidada conservant les execucions existents."""
+    if not _table_exists(connection, "execucions_planificacio_cp_sat"):
+        return
+    definition_row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'execucions_planificacio_cp_sat'
+        """
+    ).fetchone()
+    definition = str(definition_row[0] or "") if definition_row else ""
+    if "'invalidada'" in definition:
+        return
+    if "'revertida'" not in definition:
+        raise PlanningSchemaMigrationError(
+            "No s'ha pogut ampliar els estats de les propostes"
+        )
+
+    rebuilt = "execucions_planificacio_cp_sat_rebuilt"
+    rebuilt_sql = definition.replace(
+        "execucions_planificacio_cp_sat",
+        rebuilt,
+        1,
+    ).replace("'revertida'", "'invalidada', 'revertida'", 1)
+    columns = [
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info(execucions_planificacio_cp_sat)"
+        )
+    ]
+    quoted_columns = ", ".join(f'"{column}"' for column in columns)
+    connection.execute(f'DROP TABLE IF EXISTS "{rebuilt}"')
+    connection.execute(rebuilt_sql)
+    connection.execute(
+        f'INSERT INTO "{rebuilt}" ({quoted_columns}) '
+        f'SELECT {quoted_columns} FROM "execucions_planificacio_cp_sat"'
+    )
+    connection.execute('DROP TABLE "execucions_planificacio_cp_sat"')
+    connection.execute(
+        f'ALTER TABLE "{rebuilt}" RENAME TO "execucions_planificacio_cp_sat"'
+    )
+
+
 def _create_generic_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -327,7 +373,7 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
             estat TEXT NOT NULL DEFAULT 'esborrany'
                 CHECK (estat IN (
                     'esborrany', 'validada', 'publicada',
-                    'descartada', 'revertida'
+                    'descartada', 'invalidada', 'revertida'
                 )),
             origen TEXT NOT NULL,
             origen_id TEXT,
@@ -476,6 +522,44 @@ def _create_generic_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (publicacio_id)
                 REFERENCES publicacions_planificacio_cp_sat(id)
         )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notificacions_xivato (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            publicacio_id INTEGER NOT NULL,
+            versio_pla INTEGER NOT NULL,
+            canvi_id INTEGER NOT NULL,
+            treballador_id TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            tipus TEXT NOT NULL,
+            variables_json TEXT NOT NULL,
+            estat TEXT NOT NULL DEFAULT 'pendent'
+                CHECK (estat IN (
+                    'pendent', 'previsualitzat', 'sense_mapping',
+                    'enviat', 'duplicat', 'error'
+                )),
+            intents INTEGER NOT NULL DEFAULT 0,
+            resposta_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            sent_at TEXT,
+            FOREIGN KEY (publicacio_id)
+                REFERENCES publicacions_planificacio_cp_sat(id),
+            FOREIGN KEY (versio_pla)
+                REFERENCES versions_pla_publicat(versio),
+            FOREIGN KEY (canvi_id)
+                REFERENCES canvis_planificacio_cp_sat(id),
+            CHECK (intents >= 0)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_notificacions_xivato_publicacio
+        ON notificacions_xivato(publicacio_id, estat, id)
         """
     )
     connection.execute(
@@ -639,6 +723,7 @@ def migrate_planning_schema(database_path: str | Path) -> None:
             _repair_legacy_replanning_foreign_key(connection)
             _migrate_service_night_indicator(connection)
             _migrate_partial_publications(connection)
+            _migrate_invalidated_execution_state(connection)
             _create_generic_schema(connection)
             connection.commit()
         except Exception:

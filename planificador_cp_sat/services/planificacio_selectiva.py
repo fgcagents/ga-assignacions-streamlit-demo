@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
-from cp_sat_pilot import Assignment, CpSatPlanner
+from cp_sat_pilot import Assignment, PlannerCore
 from cp_sat_pilot.sqlite_adapter import SqliteInputError, load_problem_from_sqlite
 
 from planificador_cp_sat.services.esquema_planificacio import (
@@ -198,7 +198,7 @@ def preview_preassignments(
         base_problem,
         required_assignments=tuple(sorted(required.items())),
     )
-    errors = CpSatPlanner(problem).validate(
+    errors = PlannerCore(problem).validate(
         _required_assignment_objects(problem)
     )
     if errors:

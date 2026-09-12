@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 
 from .domain import PlanningProblem, Worker
-from .model import CpSatPlanner
+from .model import PlannerCore
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +30,7 @@ class ScenarioSpec:
 
 def candidate_opportunities(problem: PlanningProblem) -> Counter[str]:
     """Compta els candidats estàtics que cada treballador podria cobrir."""
-    return Counter(worker_id for worker_id, _ in CpSatPlanner(problem).candidate_pairs())
+    return Counter(worker_id for worker_id, _ in PlannerCore(problem).candidate_pairs())
 
 
 def apply_scenario(

@@ -1,5 +1,6 @@
 """Pilot CP-SAT independent del motor genètic."""
 
+from .configuration import PriorityPolicy
 from .domain import (
     Assignment,
     EquityWorkerDiagnostic,
@@ -13,8 +14,11 @@ from .domain import (
     Worker,
     is_night_interval,
 )
-from .model import CpSatPlanner, SoftObjectiveWeights, SolverConfig
+from .model import PlannerCore, SoftObjectiveWeights, SolverConfig
 from .priority_planner import PriorityPlanner
+
+# Compatibilitat d'importació: és el mateix motor, no una implementació antiga.
+CpSatPlanner = PriorityPlanner
 from .quality import EquityExecutionAssessment, assess_equity_execution
 from .multistart import (
     MultiStartCandidate,
@@ -39,6 +43,7 @@ __all__ = [
     "Assignment",
     "EquityWorkerDiagnostic",
     "CpSatPlanner",
+    "PlannerCore",
     "EquityExecutionAssessment",
     "HistoricalAssignment",
     "MultiStartCandidate",
@@ -48,6 +53,7 @@ __all__ = [
     "OptimizationPhase",
     "PlanningProblem",
     "PriorityPlanner",
+    "PriorityPolicy",
     "SocialDiagnosticSummary",
     "SolveResult",
     "SoftObjectiveWeights",

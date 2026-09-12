@@ -27,6 +27,7 @@ class Worker:
     group: str
     skills: frozenset[str]
     rest_dates: frozenset[date] = field(default_factory=frozenset)
+    base_rest_dates: frozenset[date] = field(default_factory=frozenset)
     annual_minutes: int = 0
     max_annual_minutes: int = 1605 * 60
     home_zone: str = ""
@@ -108,6 +109,17 @@ class Need:
     @property
     def duration_minutes(self) -> int:
         return int((self.end - self.start).total_seconds() // 60)
+
+
+def violates_late_friday_base_weekend(worker: Worker, need: Need) -> bool:
+    """Protegeix el descans base contigu de dissabte i diumenge."""
+    if need.date.weekday() != 4:
+        return False
+    saturday = need.date + timedelta(days=1)
+    sunday = need.date + timedelta(days=2)
+    if not {saturday, sunday}.issubset(worker.base_rest_dates):
+        return False
+    return need.end.date() > need.date or need.end.time() > time(22, 0)
 
 
 @dataclass(frozen=True, slots=True)

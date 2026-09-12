@@ -427,6 +427,10 @@ def generate_planning_proposal(
     )
     requested_seeds = tuple(dict.fromkeys(int(seed) for seed in seeds))
     selected_engine = normalize_solver_engine(solver_engine)
+    if selected_engine is SolverEngine.ANNUAL:
+        raise PlanningProposalGenerationError(
+            "El roadmap anual es calcula a Pla anual; no és una proposta publicable"
+        )
     try:
         selection = solve_adaptive_multi_start(
             create_planner(prepared.problem, selected_engine),

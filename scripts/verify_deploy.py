@@ -11,6 +11,8 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_DATABASE = ROOT / "data" / "treballadors_demo.db"
 REQUIRED_PATHS = (
+    ROOT / "planificador_cp_sat" / "ui" / "ajuda.py",
+    ROOT / "docs" / "GUIA_USUARI_CP_SAT.html",
     ROOT / "streamlit_app.py",
     ROOT / "requirements.txt",
     ROOT / "app_pages" / "resum.py",

@@ -771,6 +771,97 @@ def llista_propostes(db_path: str | Path) -> list[dict[str, Any]]:
     return _files(rows)
 
 
+def eliminar_proposta_esborrany(
+    db_path: str | Path,
+    proposta_id: int,
+) -> dict[str, int | None]:
+    """Elimina una reparació no aplicada i descarta el càlcul vinculat."""
+    inicialitza_planificacio(db_path)
+    with _connexio(db_path) as conn:
+        proposta = conn.execute(
+            """
+            SELECT id, incidencia_id, estat, execucio_planificacio_id
+            FROM propostes_replanificacio WHERE id = ?
+            """,
+            (proposta_id,),
+        ).fetchone()
+        if proposta is None:
+            raise ValueError("No s'ha trobat la reparació")
+        if proposta["estat"] != "esborrany":
+            raise ValueError("Només es pot eliminar una reparació en esborrany")
+
+        execution_id = proposta["execucio_planificacio_id"]
+        if execution_id is not None:
+            publications = conn.execute(
+                """
+                SELECT COUNT(*) FROM publicacions_planificacio_cp_sat
+                WHERE execucio_id = ? AND reverted_at IS NULL
+                """,
+                (execution_id,),
+            ).fetchone()[0]
+            if publications:
+                raise ValueError(
+                    "No es pot eliminar una reparació que té publicacions actives"
+                )
+            execution = conn.execute(
+                """
+                SELECT estat FROM execucions_planificacio_cp_sat WHERE id = ?
+                """,
+                (execution_id,),
+            ).fetchone()
+            if execution and execution["estat"] in {"esborrany", "validada"}:
+                conn.execute(
+                    """
+                    UPDATE execucions_planificacio_cp_sat
+                    SET estat = 'descartada', discarded_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (execution_id,),
+                )
+            elif execution and execution["estat"] != "descartada":
+                raise ValueError(
+                    "El càlcul vinculat ja no es pot descartar de manera segura"
+                )
+
+        incidence_id = int(proposta["incidencia_id"])
+        conn.execute(
+            "DELETE FROM proposta_canvis WHERE proposta_id = ?",
+            (proposta_id,),
+        )
+        deleted = conn.execute(
+            """
+            DELETE FROM propostes_replanificacio
+            WHERE id = ? AND estat = 'esborrany'
+            """,
+            (proposta_id,),
+        )
+        if deleted.rowcount != 1:
+            raise ValueError("La reparació ha canviat d'estat durant l'eliminació")
+        conn.execute(
+            """
+            UPDATE incidencies_personal SET estat = 'registrada'
+            WHERE id = ? AND estat = 'en_proposta'
+              AND NOT EXISTS (
+                  SELECT 1 FROM propostes_replanificacio
+                  WHERE incidencia_id = ? AND estat = 'esborrany'
+              )
+            """,
+            (incidence_id, incidence_id),
+        )
+        _audita(
+            conn,
+            "proposta",
+            proposta_id,
+            "eliminada_esborrany",
+            f"execucio={execution_id}; incidencia={incidence_id}",
+        )
+    return {
+        "proposta_id": proposta_id,
+        "incidencia_id": incidence_id,
+        "execucio_planificacio_id": execution_id,
+    }
+
+
 def _files_pla_actiu(
     conn: sqlite3.Connection,
     data_inici: str,
@@ -913,7 +1004,7 @@ def _aprovar_proposta_cp_sat_legacy(
         plan_snapshot_hash,
         prepare_incident_problem,
     )
-    from cp_sat_pilot import Assignment, CpSatPlanner
+    from cp_sat_pilot import Assignment, PlannerCore
 
     current_rows = _files_pla_actiu(
         conn,
@@ -1004,7 +1095,7 @@ def _aprovar_proposta_cp_sat_legacy(
             "La proposta no reemplaça totes les assignacions afectades"
         )
 
-    validation_errors = CpSatPlanner(context.problem).validate(final_assignments)
+    validation_errors = PlannerCore(context.problem).validate(final_assignments)
     if validation_errors:
         raise ValueError(
             "La proposta ja no compleix les restriccions dures: "

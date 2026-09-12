@@ -5,7 +5,6 @@ from __future__ import annotations
 from enum import StrEnum
 
 from cp_sat_pilot import (
-    CpSatPlanner,
     EquityExecutionAssessment,
     PlanningProblem,
     PriorityPlanner,
@@ -15,8 +14,9 @@ from cp_sat_pilot import (
 
 
 class SolverEngine(StrEnum):
-    CURRENT = "current"
+    CURRENT = "current"  # Només registres històrics.
     PRIORITY = "priority"
+    ANNUAL = "annual"  # Només lectura de propostes històriques; motor retirat.
 
 
 PUBLISHABLE_SOLVER_STATUSES = frozenset({"FEASIBLE", "OPTIMAL"})
@@ -25,6 +25,7 @@ PUBLISHABLE_SOLVER_STATUSES = frozenset({"FEASIBLE", "OPTIMAL"})
 _LABELS = {
     SolverEngine.CURRENT: "Anterior",
     SolverEngine.PRIORITY: "Vigent",
+    SolverEngine.ANNUAL: "Anual (roadmap)",
 }
 
 
@@ -42,11 +43,13 @@ def solver_engine_label(value: SolverEngine | str) -> str:
 def create_planner(
     problem: PlanningProblem,
     engine: SolverEngine | str = SolverEngine.PRIORITY,
-) -> CpSatPlanner:
+) -> PriorityPlanner:
     selected = normalize_solver_engine(engine)
     if selected is SolverEngine.PRIORITY:
         return PriorityPlanner(problem)
-    return CpSatPlanner(problem)
+    if selected is SolverEngine.ANNUAL:
+        raise ValueError("El motor anual està retirat del projecte principal")
+    raise ValueError("El motor anterior està retirat; utilitza el motor vigent")
 
 
 def assess_solver_execution(
@@ -57,6 +60,18 @@ def assess_solver_execution(
     selected = normalize_solver_engine(engine)
     if selected is SolverEngine.CURRENT:
         return assess_equity_execution(result)
+
+    if selected is SolverEngine.ANNUAL:
+        phase = next((p for p in result.optimization_phases if p.name == "equitat_anual"), None)
+        return EquityExecutionAssessment(
+            status="avaluada" if result.status == "OPTIMAL" else "factible_no_optima",
+            publishable=False,
+            operational_phase_status=result.optimization_phases[0].status if result.optimization_phases else "NO_EXECUTADA",
+            equity_phase_status=phase.status if phase else "NO_EXECUTADA",
+            reasons=("roadmap_no_publicable",),
+            principle="equitat_anual_ponderada",
+            technical_ready=result.feasible and phase is not None,
+        )
 
     phases = tuple(result.optimization_phases)
     coverage_status = next(

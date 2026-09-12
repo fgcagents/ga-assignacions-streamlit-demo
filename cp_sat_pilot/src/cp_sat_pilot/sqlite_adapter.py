@@ -458,6 +458,9 @@ def load_problem_from_sqlite(
                 group=str(row["grup"] or ""),
                 skills=_split_values(row["habilitacions"]),
                 rest_dates=frozenset(rest_dates.get(str(row["id"]), set())),
+                base_rest_dates=frozenset(
+                    base_rest_dates.get(str(row["id"]), set())
+                ),
                 annual_minutes=max(
                     0,
                     annual_minutes.get(str(row["id"]), 0)

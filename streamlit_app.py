@@ -34,6 +34,8 @@ if CP_SAT_SOURCE_DIR.is_dir():
 
 import streamlit as st
 
+from planificador_cp_sat.ui.ajuda import render_context_help, render_full_guide
+
 from planificador_cp_sat.ui.descansos import (
     reinicia_formularis_descansos,
 )
@@ -64,13 +66,17 @@ def _session_database_path() -> Path:
     return session_path
 
 
-DATABASE_PATH = _session_database_path()
-
 st.set_page_config(
     page_title="Planificador de cobertures",
     page_icon=":material/calendar_month:",
     layout="wide",
 )
+
+if st.query_params.get("ajuda") == "guia":
+    render_full_guide()
+    st.stop()
+
+DATABASE_PATH = _session_database_path()
 
 
 @st.cache_resource
@@ -172,4 +178,7 @@ page = st.navigation(
     ],
     position="top",
 )
+with st.sidebar:
+    render_context_help(page.title)
+
 page.run()

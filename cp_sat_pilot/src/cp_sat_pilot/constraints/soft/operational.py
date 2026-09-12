@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time, timedelta
+from datetime import timedelta
 
 from ortools.sat.python import cp_model
 
@@ -10,6 +10,7 @@ from ...domain import (
     Need,
     PlanningProblem,
     Worker,
+    violates_late_friday_base_weekend,
 )
 from ..types import CoreModel, SoftObjectiveWeights
 
@@ -119,17 +120,6 @@ def _build_consecutive_day_penalties(
     return penalties
 
 
-def _violates_friday_rule(worker: Worker, need: Need) -> bool:
-    if need.date.weekday() != 4:
-        return False
-    saturday = need.date + timedelta(days=1)
-    sunday = need.date + timedelta(days=2)
-    if saturday not in worker.rest_dates or sunday not in worker.rest_dates:
-        return False
-    crosses_midnight = need.end.date() > need.date
-    return crosses_midnight or need.end.time() > time(22, 0)
-
-
 def build_operational_components(
     problem: PlanningProblem,
     core: CoreModel,
@@ -219,7 +209,7 @@ def build_operational_components(
     friday_bad_vars = [
         variable
         for (worker_id, need_id), variable in core.assignment_vars.items()
-        if _violates_friday_rule(
+        if violates_late_friday_base_weekend(
             workers_by_id[worker_id], needs_by_id[need_id]
         )
     ]
