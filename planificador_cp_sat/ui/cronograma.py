@@ -651,6 +651,7 @@ def _render_detail(cell: dict[str, Any]) -> None:
     ]
     if cell["worker_name"]:
         # details.insert(0, f"Treballador: {cell['worker_id']} · {cell['worker_name']}")
+        pass
     if cell["start_time"]:
         suffix = " (+1)" if cell["overnight"] else ""
         details.append(
